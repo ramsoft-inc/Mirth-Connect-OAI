@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuite errors="0" failures="0" hostname="LONGNGO" name="com.mirth.connect.donkey.server.channel.StatisticsTest" skipped="0" tests="9" time="0.029" timestamp="2023-11-16T09:57:19">
+  <properties>
+    <property name="java.vendor" value="Eclipse Adoptium" />
+    <property name="sun.java.launcher" value="SUN_STANDARD" />
+    <property name="sun.management.compiler" value="HotSpot 64-Bit Tiered Compilers" />
+    <property name="lib" value="c:\projects\task\connect-4.4.2\donkey/lib" />
+    <property name="os.name" value="Windows 11" />
+    <property name="server.jar" value="donkey-server.jar" />
+    <property name="sun.desktop" value="windows" />
+    <property name="java.vm.specification.vendor" value="Oracle Corporation" />
+    <property name="ant.home" value="c:\projects\soft\apache-ant-1.9.16\bin\.." />
+    <property name="java.runtime.version" value="11.0.21+9" />
+    <property name="webadmin" value="../webadmin" />
+    <property name="code-coverage-reports" value="code-coverage-reports" />
+    <property name="donkey" value="../donkey" />
+    <property name="user.name" value="lngo" />
+    <property name="client" value="../client" />
+    <property name="server.build" value="../server/build" />
+    <property name="server" value="../server" />
+    <property name="user.language" value="en" />
+    <property name="sun.boot.library.path" value="C:\Program Files\Eclipse Adoptium\jdk-11.0.21.9-hotspot\bin" />
+    <property name="manager" value="../manager" />
+    <property name="ant.project.default-target" value="build" />
+    <property name="ant.project.name" value="donkey" />
+    <property name="java.vm.compressedOopsMode" value="32-bit" />
+    <property name="classes" value="c:\projects\task\connect-4.4.2\donkey/classes" />
+    <property name="java.version" value="11.0.21" />
+    <property name="version" value="4.4.2" />
+    <property name="user.timezone" value="" />
+    <property name="sun.arch.data.model" value="64" />
+    <property name="junit-reports" value="junit-reports" />
+    <property name="sun.cpu.isalist" value="amd64" />
+    <property name="sun.jnu.encoding" value="Cp1252" />
+    <property name="file.separator" value="\" />
+    <property name="java.specification.name" value="Java Platform API Specification" />
+    <property name="ant.file.mirth-connect" value="c:\projects\task\connect-4.4.2\server\mirth-build.xml" />
+    <property name="java.class.version" value="55.0" />
+    <property name="src" value="c:\projects\task\connect-4.4.2\donkey/src/main/java" />
+    <property name="user.country" value="US" />
+    <property name="java.home" value="C:\Program Files\Eclipse Adoptium\jdk-11.0.21.9-hotspot" />
+    <property name="java.vm.info" value="mixed mode" />
+    <property name="os.version" value="10.0" />
+    <property name="ant.file" value="c:\projects\task\connect-4.4.2\donkey\build.xml" />
+    <property name="path.separator" value=";" />
+    <property name="testlib" value="c:\projects\task\connect-4.4.2\donkey/testlib" />
+    <property name="java.vm.version" value="11.0.21+9" />
+    <property name="docs" value="c:\projects\task\connect-4.4.2\donkey/docs" />
+    <property name="test_classes" value="c:\projects\task\connect-4.4.2\donkey/test_classes" />
+    <property name="user.variant" value="" />
+    <property name="ant.library.dir" value="C:\projects\soft\apache-ant-1.9.16\lib" />
+    <property name="java.awt.printerjob" value="sun.awt.windows.WPrinterJob" />
+    <property name="sun.io.unicode.encoding" value="UnicodeLittle" />
+    <property name="java.specification.maintenance.version" value="2" />
+    <property name="awt.toolkit" value="sun.awt.windows.WToolkit" />
+    <property name="_jacoco.agentFile" value="C:\Users\lngo\AppData\Local\Temp\jacocoagent18421062388649050328.jar" />
+    <property name="sun.stdout.encoding" value="cp437" />
+    <property name="ant.file.type.mirth-connect" value="file" />
+    <property name="user.script" value="" />
+    <property name="user.home" value="C:\Users\lngo" />
+    <property name="donkey.setup" value="../donkey/setup" />
+    <property name="java.version.date" value="2023-10-17" />
+    <property name="ant.file.donkey" value="c:\projects\task\connect-4.4.2\donkey\build.xml" />
+    <property name="java.specification.vendor" value="Oracle Corporation" />
+    <property name="test" value="c:\projects\task\connect-4.4.2\donkey/src/test/java" />
+    <property name="java.library.path" value="C:\Program Files\Eclipse Adoptium\jdk-11.0.21.9-hotspot\bin;C:\WINDOWS\Sun\Java\bin;C:\WINDOWS\system32;C:\WINDOWS;C:\Program Files\Eclipse Adoptium\jdk-11.0.21.9-hotspot\bin;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0\;C:\WINDOWS\System32\OpenSSH\;C:\Program Files\Microsoft SQL Server\150\Tools\Binn\;C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\;C:\Program Files\dotnet\;C:\projects\soft\;C:\Program Files\Microsoft VS Code\bin;C:\projects\soft\apache-maven-3.9.3-bin\apache-maven-3.9.3\bin;C:\Program Files\Eclipse Adoptium\jdk-11.0.21.9-hotspot\\bin;C:\Program Files\Git\cmd;C:\Program Files\TortoiseGit\bin;c:\projects\soft\apache-ant-1.9.16\bin;C:\Users\lngo\AppData\Local\Microsoft\WindowsApps;C:\Users\lngo\.dotnet\tools;." />
+    <property name="java.vendor.url" value="https://adoptium.net/" />
+    <property name="java.vm.vendor" value="Eclipse Adoptium" />
+    <property name="java.runtime.name" value="OpenJDK Runtime Environment" />
+    <property name="sun.java.command" value="org.apache.tools.ant.taskdefs.optional.junit.JUnitTestRunner testsfile=c:\projects\task\connect-4.4.2\donkey\junittestcases16354336367969907579.properties skipNonTests=false filtertrace=true haltOnError=false haltOnFailure=false showoutput=false outputtoformatters=true logfailedtests=true threadid=0 logtestlistenerevents=false formatter=org.apache.tools.ant.taskdefs.optional.junit.XMLJUnitResultFormatter,c:\projects\task\connect-4.4.2\donkey\junit-reports\IGNORETHIS.xml crashfile=c:\projects\task\connect-4.4.2\donkey\junitvmwatcher4003145199124712935.properties propsfile=c:\projects\task\connect-4.4.2\donkey\junit3481719356986937189.properties" />
+    <property name="java.class.path" value="c:\projects\task\connect-4.4.2\donkey\lib\HikariCP-2.5.1.jar;c:\projects\task\connect-4.4.2\donkey\lib\commons\commons-beanutils-1.9.3.jar;c:\projects\task\connect-4.4.2\donkey\lib\commons\commons-codec-1.13.jar;c:\projects\task\connect-4.4.2\donkey\lib\commons\commons-collections4-4.4.jar;c:\projects\task\connect-4.4.2\donkey\lib\commons\commons-dbcp2-2.0.1.jar;c:\projects\task\connect-4.4.2\donkey\lib\commons\commons-dbutils-1.7.jar;c:\projects\task\connect-4.4.2\donkey\lib\commons\commons-io-2.6.jar;c:\projects\task\connect-4.4.2\donkey\lib\commons\commons-lang-2.6.jar;c:\projects\task\connect-4.4.2\donkey\lib\commons\commons-lang3-3.9.jar;c:\projects\task\connect-4.4.2\donkey\lib\commons\commons-logging-1.2.jar;c:\projects\task\connect-4.4.2\donkey\lib\commons\commons-math3-3.0.jar;c:\projects\task\connect-4.4.2\donkey\lib\commons\commons-pool2-2.3.jar;c:\projects\task\connect-4.4.2\donkey\lib\database\derby-10.10.2.0.jar;c:\projects\task\connect-4.4.2\donkey\lib\database\jtds-1.3.1.jar;c:\projects\task\connect-4.4.2\donkey\lib\database\mssql-jdbc-8.4.1.jre8.jar;c:\projects\task\connect-4.4.2\donkey\lib\database\mysql-connector-java-8.0.16.jar;c:\projects\task\connect-4.4.2\donkey\lib\database\ojdbc8-12.2.0.1.jar;c:\projects\task\connect-4.4.2\donkey\lib\database\postgresql-42.2.19.jar;c:\projects\task\connect-4.4.2\donkey\lib\guava\checker-qual-2.10.0.jar;c:\projects\task\connect-4.4.2\donkey\lib\guava\error_prone_annotations-2.3.4.jar;c:\projects\task\connect-4.4.2\donkey\lib\guava\failureaccess-1.0.1.jar;c:\projects\task\connect-4.4.2\donkey\lib\guava\guava-28.2-jre.jar;c:\projects\task\connect-4.4.2\donkey\lib\guava\j2objc-annotations-1.3.jar;c:\projects\task\connect-4.4.2\donkey\lib\guava\jsr305-3.0.2.jar;c:\projects\task\connect-4.4.2\donkey\lib\guava\listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.jar;c:\projects\task\connect-4.4.2\donkey\lib\guice-4.1.0.jar;c:\projects\task\connect-4.4.2\donkey\lib\javassist-3.26.0-GA.jar;c:\projects\task\connect-4.4.2\donkey\lib\log4j-1.2-api-2.17.2.jar;c:\projects\task\connect-4.4.2\donkey\lib\log4j-api-2.17.2.jar;c:\projects\task\connect-4.4.2\donkey\lib\log4j-core-2.17.2.jar;c:\projects\task\connect-4.4.2\donkey\lib\quartz-all-2.1.7.jar;c:\projects\task\connect-4.4.2\donkey\lib\slf4j-api-1.7.30.jar;c:\projects\task\connect-4.4.2\donkey\lib\slf4j-log4j12-1.7.30.jar;c:\projects\task\connect-4.4.2\donkey\lib\xstream\xpp3-1.1.4c.jar;c:\projects\task\connect-4.4.2\donkey\lib\xstream\xstream-1.4.19.jar;c:\projects\task\connect-4.4.2\donkey\testlib\aopalliance-repackaged-2.4.0-b31.jar;c:\projects\task\connect-4.4.2\donkey\testlib\byte-buddy-1.8.8.jar;c:\projects\task\connect-4.4.2\donkey\testlib\byte-buddy-agent-1.8.8.jar;c:\projects\task\connect-4.4.2\donkey\testlib\javax.inject-2.4.0-b31.jar;c:\projects\task\connect-4.4.2\donkey\testlib\junit-4.8.1.jar;c:\projects\task\connect-4.4.2\donkey\testlib\mockito-core-2.7.9.jar;c:\projects\task\connect-4.4.2\donkey\testlib\objenesis-2.5.1.jar;c:\projects\task\connect-4.4.2\donkey\classes;c:\projects\task\connect-4.4.2\donkey\classes\com;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\model;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\model\channel;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\model\event;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\model\message;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\model\message\attachment;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\server;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\server\channel;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\server\channel\components;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\server\controllers;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\server\data;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\server\data\buffered;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\server\data\jdbc;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\server\data\passthru;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\server\data\timed;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\server\event;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\server\message;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\server\message\batch;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\server\queue;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\util;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\util\migration;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\util\purge;c:\projects\task\connect-4.4.2\donkey\classes\com\mirth\connect\donkey\util\xstream;c:\projects\task\connect-4.4.2\donkey\test_classes;c:\projects\task\connect-4.4.2\donkey\test_classes\com;c:\projects\task\connect-4.4.2\donkey\test_classes\com\mirth;c:\projects\task\connect-4.4.2\donkey\test_classes\com\mirth\connect;c:\projects\task\connect-4.4.2\donkey\test_classes\com\mirth\connect\donkey;c:\projects\task\connect-4.4.2\donkey\test_classes\com\mirth\connect\donkey\server;c:\projects\task\connect-4.4.2\donkey\test_classes\com\mirth\connect\donkey\server\channel;c:\projects\task\connect-4.4.2\donkey\test_classes\com\mirth\connect\donkey\server\data;c:\projects\task\connect-4.4.2\donkey\test_classes\com\mirth\connect\donkey\server\data\jdbc;c:\projects\task\connect-4.4.2\donkey\test_classes\com\mirth\connect\donkey\test;c:\projects\task\connect-4.4.2\donkey\test_classes\com\mirth\connect\donkey\test\util;C:\projects\soft\apache-ant-1.9.16\lib\ant-launcher.jar;C:\projects\soft\apache-ant-1.9.16\lib\ant.jar;C:\projects\soft\apache-ant-1.9.16\lib\ant-junit.jar;C:\projects\soft\apache-ant-1.9.16\lib\ant-junit4.jar" />
+    <property name="ant.version" value="Apache Ant(TM) version 1.9.16 compiled on July 10 2021" />
+    <property name="setup.docs" value="c:\projects\task\connect-4.4.2\donkey/setup/docs" />
+    <property name="jdk.debug" value="release" />
+    <property name="java.vm.specification.name" value="Java Virtual Machine Specification" />
+    <property name="server.setup" value="../server/setup" />
+    <property name="ant.file.type" value="file" />
+    <property name="java.vm.specification.version" value="11" />
+    <property name="sun.cpu.endian" value="little" />
+    <property name="sun.os.patch.level" value="" />
+    <property name="java.io.tmpdir" value="C:\Users\lngo\AppData\Local\Temp\" />
+    <property name="setup" value="c:\projects\task\connect-4.4.2\donkey/setup" />
+    <property name="setup.lib" value="c:\projects\task\connect-4.4.2\donkey/setup/lib" />
+    <property name="java.vendor.url.bug" value="https://github.com/adoptium/adoptium-support/issues" />
+    <property name="os.arch" value="amd64" />
+    <property name="java.awt.graphicsenv" value="sun.awt.Win32GraphicsEnvironment" />
+    <property name="cli" value="../command" />
+    <property name="user.dir" value="c:\projects\task\connect-4.4.2\server" />
+    <property name="dbconf" value="c:\projects\task\connect-4.4.2\donkey/donkeydbconf" />
+    <property name="line.separator" value="&#xd;&#xa;" />
+    <property name="java.vm.name" value="OpenJDK 64-Bit Server VM" />
+    <property name="basedir" value="c:\projects\task\connect-4.4.2\donkey" />
+    <property name="ant.java.version" value="11" />
+    <property name="ant.core.lib" value="C:\projects\soft\apache-ant-1.9.16\lib\ant.jar" />
+    <property name="ant.file.type.donkey" value="file" />
+    <property name="sun.stderr.encoding" value="cp437" />
+    <property name="file.encoding" value="Cp1252" />
+    <property name="model.jar" value="donkey-model.jar" />
+    <property name="java.specification.version" value="11" />
+    <property name="ant.project.invoked-targets" value="test-run" />
+    <property name="java.vendor.version" value="Temurin-11.0.21+9" />
+  </properties>
+  <testcase classname="com.mirth.connect.donkey.server.channel.StatisticsTest" name="incrementTwiceDecrementOnce_IfStartAtZero_ShouldBeOne" time="0.025" />
+  <testcase classname="com.mirth.connect.donkey.server.channel.StatisticsTest" name="decrement_IfAtZero_ShouldStayAtZero" time="0.0" />
+  <testcase classname="com.mirth.connect.donkey.server.channel.StatisticsTest" name="decrement_IfAtZero_ShouldBeMinusOne" time="0.0" />
+  <testcase classname="com.mirth.connect.donkey.server.channel.StatisticsTest" name="incrementTwice_IfAtZero_ShouldBeTwo" time="0.0" />
+  <testcase classname="com.mirth.connect.donkey.server.channel.StatisticsTest" name="decrementThenIncrement_IfStartAtZero_ShouldBeOne" time="0.0" />
+  <testcase classname="com.mirth.connect.donkey.server.channel.StatisticsTest" name="decrementThenIncrement_IfStartAtZero_ShouldBeZero" time="0.0" />
+  <testcase classname="com.mirth.connect.donkey.server.channel.StatisticsTest" name="incrementSeparateConnectors_AggregateShouldBeSum" time="0.0" />
+  <testcase classname="com.mirth.connect.donkey.server.channel.StatisticsTest" name="decrementFive_IfStartAt4_ShouldBeZero" time="0.0" />
+  <testcase classname="com.mirth.connect.donkey.server.channel.StatisticsTest" name="decrementFive_IfStartAt4_ShouldBeMinusOne" time="0.0" />
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
