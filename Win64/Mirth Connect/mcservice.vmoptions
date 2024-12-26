@@ -1,5 +1,0 @@
--server
--Xmx3072m
--Djava.awt.headless=true
--Dapple.awt.UIElement=true
---add-opens=java.sql.rowset/com.sun.rowset=ALL-UNNAMED

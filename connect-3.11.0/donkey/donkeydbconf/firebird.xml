@@ -1,0 +1,396 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+
+<queries>
+	<query id="createMessageTable">
+		EXECUTE BLOCK AS BEGIN
+		IF (NOT EXISTS (SELECT 1 FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = 'D_M${localChannelId}')) THEN
+		   EXECUTE STATEMENT 'CREATE TABLE D_M${localChannelId} (
+					ID BIGINT NOT NULL,
+					SERVER_ID VARCHAR(36) NOT NULL,
+					RECEIVED_DATE TIMESTAMP DEFAULT NULL,
+					PROCESSED SMALLINT DEFAULT 0 NOT NULL,
+					ORIGINAL_ID BIGINT,
+					IMPORT_ID BIGINT,
+					IMPORT_CHANNEL_ID VARCHAR(36),
+					CONSTRAINT D_M${localChannelId}_PKEY PRIMARY KEY(ID)
+				);';
+		END
+	</query>
+	
+	<query id="createMessageTableIndex1">
+		EXECUTE BLOCK AS BEGIN
+		   IF (NOT EXISTS (SELECT DISTINCT 1 FROM RDB$INDEX_SEGMENTS WHERE RDB$INDEX_NAME = 'D_M${localChannelId}_INDEX1')) THEN
+			  EXECUTE STATEMENT 'CREATE ASC INDEX D_M${localChannelId}_INDEX1 ON D_M${localChannelId} (ID, SERVER_ID);';
+		END
+	</query>
+	
+	<query id="createConnectorMessageTable">
+		EXECUTE BLOCK AS BEGIN
+		IF (NOT EXISTS (SELECT 1 FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = 'D_MM${localChannelId}')) THEN
+		   EXECUTE STATEMENT 'CREATE TABLE D_MM${localChannelId} (
+					ID INTEGER NOT NULL,
+					MESSAGE_ID BIGINT NOT NULL,
+					SERVER_ID VARCHAR(36) NOT NULL,
+					RECEIVED_DATE TIMESTAMP DEFAULT NULL,
+					STATUS CHAR(1) NOT NULL,
+					CONNECTOR_NAME BLOB SUB_TYPE TEXT,
+					SEND_ATTEMPTS INTEGER DEFAULT 0 NOT NULL,
+					SEND_DATE TIMESTAMP DEFAULT NULL,
+					RESPONSE_DATE TIMESTAMP DEFAULT NULL,
+					ERROR_CODE INTEGER DEFAULT 0 NOT NULL,
+					CHAIN_ID INTEGER NOT NULL,
+					ORDER_ID INTEGER NOT NULL,
+					CONSTRAINT D_MM${localChannelId}_PKEY PRIMARY KEY(MESSAGE_ID, ID),
+					CONSTRAINT D_MM${localChannelId}_FKEY FOREIGN KEY(MESSAGE_ID) REFERENCES D_M${localChannelId}(ID) ON DELETE CASCADE
+				);';
+		END
+	</query>
+	
+	<query id="createConnectorMessageTableIndex1">
+		EXECUTE BLOCK AS BEGIN
+		   IF (NOT EXISTS (SELECT DISTINCT 1 FROM RDB$INDEX_SEGMENTS WHERE RDB$INDEX_NAME = 'D_MM${localChannelId}_INDEX1')) THEN
+			  EXECUTE STATEMENT 'CREATE ASC INDEX D_MM${localChannelId}_INDEX1 ON D_MM${localChannelId} (MESSAGE_ID, ID, STATUS);';
+		END
+	</query>
+	
+	<query id="createConnectorMessageTableIndex2">
+		EXECUTE BLOCK AS BEGIN
+		   IF (NOT EXISTS (SELECT DISTINCT 1 FROM RDB$INDEX_SEGMENTS WHERE RDB$INDEX_NAME = 'D_MM${localChannelId}_INDEX2')) THEN
+			  EXECUTE STATEMENT 'CREATE ASC INDEX D_MM${localChannelId}_INDEX2 ON D_MM${localChannelId} (MESSAGE_ID, SERVER_ID, ID);';
+		END
+	</query>
+	
+	<query id="createConnectorMessageTableIndex3">
+		EXECUTE BLOCK AS BEGIN
+		   IF (NOT EXISTS (SELECT DISTINCT 1 FROM RDB$INDEX_SEGMENTS WHERE RDB$INDEX_NAME = 'D_MM${localChannelId}_INDEX3')) THEN
+			  EXECUTE STATEMENT 'CREATE ASC INDEX D_MM${localChannelId}_INDEX3 ON D_MM${localChannelId} (ID, STATUS, SERVER_ID);';
+		END
+	</query>
+	
+	<query id="createConnectorMessageTableIndex4">
+		EXECUTE BLOCK AS BEGIN
+		   IF (NOT EXISTS (SELECT DISTINCT 1 FROM RDB$INDEX_SEGMENTS WHERE RDB$INDEX_NAME = 'D_MM${localChannelId}_FKI')) THEN
+			  EXECUTE STATEMENT 'CREATE ASC INDEX D_MM${localChannelId}_FKI ON D_MM${localChannelId} (MESSAGE_ID);';
+		END
+	</query>	
+	
+	<query id="createMessageContentTable">
+		EXECUTE BLOCK AS BEGIN
+		IF (NOT EXISTS (SELECT 1 FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = 'D_MC${localChannelId}')) THEN
+		   EXECUTE STATEMENT 'CREATE TABLE D_MC${localChannelId} (
+					METADATA_ID INTEGER NOT NULL,
+					MESSAGE_ID BIGINT NOT NULL,
+					CONTENT_TYPE INTEGER NOT NULL,
+					CONTENT BLOB SUB_TYPE TEXT,
+					DATA_TYPE VARCHAR(255),
+					IS_ENCRYPTED SMALLINT NOT NULL,
+					CONSTRAINT D_MC${localChannelId}_PKEY PRIMARY KEY(MESSAGE_ID, METADATA_ID, CONTENT_TYPE),
+					CONSTRAINT D_MC${localChannelId}_FKEY FOREIGN KEY(MESSAGE_ID, METADATA_ID) REFERENCES D_MM${localChannelId}(MESSAGE_ID, ID) ON DELETE CASCADE
+				);';
+		END
+	</query>
+	
+	<query id="createMessageContentTableIndex1">
+		EXECUTE BLOCK AS BEGIN
+		   IF (NOT EXISTS (SELECT DISTINCT 1 FROM RDB$INDEX_SEGMENTS WHERE RDB$INDEX_NAME = 'D_MC${localChannelId}_FKI')) THEN
+			  EXECUTE STATEMENT 'CREATE ASC INDEX D_MC${localChannelId}_FKI ON D_MC${localChannelId} (MESSAGE_ID, METADATA_ID);';
+		END
+	</query>
+	
+	<query id="createMessageCustomMetaDataTable">
+		EXECUTE BLOCK AS BEGIN
+		IF (NOT EXISTS (SELECT 1 FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = 'D_MCM${localChannelId}')) THEN
+		   EXECUTE STATEMENT 'CREATE TABLE D_MCM${localChannelId} (
+					METADATA_ID INTEGER NOT NULL,
+					MESSAGE_ID BIGINT NOT NULL,
+					CONSTRAINT D_MCM${localChannelId}_PKEY PRIMARY KEY(MESSAGE_ID, METADATA_ID),
+					CONSTRAINT D_MCM${localChannelId}_FKEY FOREIGN KEY(MESSAGE_ID, METADATA_ID) REFERENCES D_MM${localChannelId}(MESSAGE_ID, ID) ON DELETE CASCADE
+				);';
+		END
+	</query>
+	
+	<query id="createMessageAttachmentTable">
+		EXECUTE BLOCK AS BEGIN
+		IF (NOT EXISTS (SELECT 1 FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = 'D_MA${localChannelId}')) THEN
+		   EXECUTE STATEMENT 'CREATE TABLE D_MA${localChannelId} (
+					ID VARCHAR(255) NOT NULL,
+					MESSAGE_ID BIGINT NOT NULL,
+					TYPE VARCHAR(40),
+					SEGMENT_ID INTEGER NOT NULL,
+					ATTACHMENT_SIZE INTEGER NOT NULL,
+					CONTENT BLOB SUB_TYPE BINARY
+				);';
+		END
+	</query>
+	
+	<query id="createMessageAttachmentTableIndex1">
+		EXECUTE BLOCK AS BEGIN
+		   IF (NOT EXISTS (SELECT DISTINCT 1 FROM RDB$INDEX_SEGMENTS WHERE RDB$INDEX_NAME = 'D_MA${localChannelId}_INDEX1')) THEN
+			  EXECUTE STATEMENT 'CREATE ASC INDEX D_MA${localChannelId}_INDEX1 ON D_MA${localChannelId} (ID);';
+		END
+	</query>
+	
+	<query id="createMessageAttachmentTableIndex2">
+		EXECUTE BLOCK AS BEGIN
+		   IF (NOT EXISTS (SELECT DISTINCT 1 FROM RDB$INDEX_SEGMENTS WHERE RDB$INDEX_NAME = 'D_MA${localChannelId}_FKI')) THEN
+			  EXECUTE STATEMENT 'CREATE ASC INDEX D_MA${localChannelId}_FKI ON D_MA${localChannelId} (MESSAGE_ID);';
+		END
+	</query>
+	
+	<query id="createMessageStatisticsTable">
+		EXECUTE BLOCK AS BEGIN
+		IF (NOT EXISTS (SELECT 1 FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = 'D_MS${localChannelId}')) THEN
+		   EXECUTE STATEMENT 'CREATE TABLE D_MS${localChannelId} (
+					METADATA_ID INTEGER,
+					SERVER_ID VARCHAR(36) NOT NULL,
+					RECEIVED BIGINT DEFAULT 0 NOT NULL ,
+					RECEIVED_LIFETIME BIGINT DEFAULT 0 NOT NULL,
+					FILTERED BIGINT DEFAULT 0 NOT NULL,
+					FILTERED_LIFETIME BIGINT DEFAULT 0 NOT NULL,
+					SENT BIGINT DEFAULT 0 NOT NULL,
+					SENT_LIFETIME BIGINT DEFAULT 0 NOT NULL,
+					ERROR BIGINT DEFAULT 0 NOT NULL,
+					ERROR_LIFETIME BIGINT DEFAULT 0 NOT NULL
+				);';
+		END
+	</query>
+	
+	<query id="createMessageStatisticsTableIndex1">
+		EXECUTE BLOCK AS BEGIN
+		   IF (NOT EXISTS (SELECT DISTINCT 1 FROM RDB$INDEX_SEGMENTS WHERE RDB$INDEX_NAME = 'D_MS${localChannelId}_INDEX1')) THEN
+			  EXECUTE STATEMENT 'CREATE ASC INDEX D_MS${localChannelId}_INDEX1 ON D_MS${localChannelId} (METADATA_ID, SERVER_ID);';
+		END
+	</query>
+	
+	<query id="createMessageSequence">
+		EXECUTE BLOCK AS BEGIN
+		   IF (NOT EXISTS (SELECT 1 FROM RDB$GENERATORS WHERE RDB$GENERATOR_NAME = 'D_MSQ${localChannelId}')) THEN
+			  EXECUTE STATEMENT 'CREATE SEQUENCE D_MSQ${localChannelId};'; 
+		END
+	</query>
+	
+	<query id="createChannelsTable">
+		CREATE TABLE D_CHANNELS (
+	        LOCAL_CHANNEL_ID BIGINT NOT NULL,
+	        CHANNEL_ID VARCHAR(36) NOT NULL,
+	        CONSTRAINT D_CHANNELS_PKEY PRIMARY KEY(LOCAL_CHANNEL_ID),
+	        CONSTRAINT UNIQUE_CHANNEL_ID UNIQUE (CHANNEL_ID)
+        );
+	</query>
+	
+	<query id="dropMessageTable">
+		DELETE FROM D_M${localChannelId}
+	</query>
+	
+	<query id="dropMessageMetadataTable">
+		DELETE FROM D_MM${localChannelId}
+	</query>
+	
+	<query id="dropMessageContentTable">
+		DELETE FROM D_MC${localChannelId}
+	</query>
+	
+	<query id="dropCustomMetadataTable">
+		DELETE FROM D_MCM${localChannelId}
+	</query>
+	
+	<query id="dropAttachmentsTable">
+		DELETE FROM D_MA${localChannelId}
+	</query>
+	
+	<query id="dropStatisticsTable">
+		DELETE FROM D_MS${localChannelId}
+	</query>
+	
+	<query id="dropMessageSequence">
+		EXECUTE BLOCK AS BEGIN
+		   IF (EXISTS (SELECT 1 FROM RDB$GENERATORS WHERE RDB$GENERATOR_NAME = 'D_MSQ${localChannelId}')) THEN
+			  EXECUTE STATEMENT 'ALTER SEQUENCE D_MSQ${localChannelId} RESTART WITH 0;'; 
+		END
+		
+	</query>
+	
+	<query id="deleteChannel">
+        DELETE FROM D_CHANNELS WHERE LOCAL_CHANNEL_ID = ${localChannelId}
+	</query>
+	
+	<query id="getNextMessageId">
+		SELECT GEN_ID(D_MSQ${localChannelId}, 1) FROM RDB$DATABASE;
+	</query>
+	
+	<query id="addMetaDataColumnString">
+		ALTER TABLE D_MCM${localChannelId} ADD "${columnName}" VARCHAR(255);
+	</query>
+	
+	<query id="addMetaDataColumnNumber">
+		ALTER TABLE D_MCM${localChannelId} ADD "${columnName}" NUMERIC(31, 15);
+	</query>
+	
+	<query id="addMetaDataColumnBoolean">
+		ALTER TABLE D_MCM${localChannelId} ADD "${columnName}" SMALLINT;
+	</query>
+	
+	<query id="addMetaDataColumnTimestamp">
+		ALTER TABLE D_MCM${localChannelId} ADD "${columnName}" TIMESTAMP DEFAULT NULL;
+	</query>
+	
+	<!-- Note: TRUNCATE will execute outside of the transaction and cannot be rolled back -->
+	<query id="deleteAllMessages">
+        DELETE FROM D_M${localChannelId};
+	</query>
+	
+	<query id="getConnectorMessageStatusesCheckProcessed">
+		SELECT MM.STATUS
+		FROM D_M${localChannelId} M
+		JOIN D_MM${localChannelId} MM ON MM.MESSAGE_ID = M.ID
+		WHERE M.ID = ? AND M.PROCESSED = 1
+	</query>	
+	
+	<query id="getUnfinishedMessages">
+		SELECT M.*
+		FROM D_M${localChannelId} M
+		JOIN D_MM${localChannelId} MM ON MM.MESSAGE_ID = M.ID AND MM.ID = 0
+		WHERE M.PROCESSED = 0 AND MM.SERVER_ID = ? AND MM.STATUS != 'R'
+		ORDER BY M.ID
+	</query>
+	
+	<query id="getUnfinishedMessages">
+		SELECT M.*
+		FROM D_M${localChannelId} M
+		JOIN D_MM${localChannelId} MM ON MM.MESSAGE_ID = M.ID AND MM.ID = 0
+		WHERE M.ID <![CDATA[ >= ]]> ? AND M.PROCESSED = 0 AND MM.SERVER_ID = ? AND MM.STATUS != 'R'
+		ORDER BY M.ID
+		ROWS ${limit}
+	</query>	
+	
+	<query id="getPendingMessageIds">
+		SELECT DISTINCT MESSAGE_ID
+		FROM D_MM${localChannelId}
+		WHERE MESSAGE_ID <![CDATA[ >= ]]> ? AND ID > 0 AND STATUS = 'P' AND SERVER_ID = ?
+		ORDER BY MESSAGE_ID
+		ROWS ${limit}
+	</query>	
+	
+	<query id="removeMetaDataColumn">
+		ALTER TABLE D_MCM${localChannelId} DROP "${columnName}"
+	</query>
+	
+	<query id="markAsProcessed">
+		UPDATE D_M${localChannelId} SET PROCESSED = 1
+		WHERE ID = ?
+	</query>
+	
+	<query id="resetMessage">
+		UPDATE D_M${localChannelId} SET PROCESSED = 0, IMPORT_ID = NULL, IMPORT_CHANNEL_ID = NULL
+		WHERE ID = ?
+	</query>
+	
+	<query id="selectMaxLocalChannelId">
+		EXECUTE PROCEDURE GETLOCALCHANNELID;
+	</query>
+	
+	<query id="getConnectorMessagesByMetaDataIdAndStatusWithLimit">
+		SELECT <if test="limit != null">
+			FIRST ${limit}
+		</if>		
+		<if test="offset != null">
+			SKIP ${offset}
+		</if>
+		*
+		FROM D_MM${localChannelId}
+		WHERE ID = ? AND STATUS = ? AND SERVER_ID = ?
+		ORDER BY MESSAGE_ID		
+	</query>
+	
+	<query id="getConnectorMessagesByMetaDataIdAndStatusWithLimitAndRange">
+		SELECT <if test="limit != null">
+			FIRST ${limit}
+		</if>		
+		<if test="offset != null">
+			SKIP ${offset}
+		</if>
+		*
+		FROM D_MM${localChannelId}
+		WHERE ID = ? AND STATUS = ? AND SERVER_ID = ?
+		AND MESSAGE_ID <![CDATA[ >= ]]> ? AND MESSAGE_ID <![CDATA[ <= ]]> ?
+		ORDER BY MESSAGE_ID		
+	</query>
+
+	<query id="getConnectorMessagesByMetaDataIdAndStatusWithLimitAndRangeAllServers">
+		SELECT A.* FROM (
+	
+		SELECT *, ROW_NUMBER() OVER (ORDER BY MESSAGE_ID) AS ROWNUM
+		FROM D_MM${localChannelId}
+		WHERE ID = ? AND STATUS = ?
+		AND MESSAGE_ID <![CDATA[ >= ]]> ? AND MESSAGE_ID <![CDATA[ <= ]]> ?
+		
+		) AS A WHERE A.ROWNUM <![CDATA[ > ]]> ${offset} AND A.ROWNUM <![CDATA[ <= ]]> (${offset} + ${limit})
+	</query>
+	
+	<query id="getConnectorMessageStatusesCheckProcessed">
+		SELECT MM.ID, MM.STATUS
+		FROM D_M${localChannelId} M
+		JOIN D_MM${localChannelId} MM ON MM.MESSAGE_ID = M.ID
+		WHERE M.ID = ? AND M.PROCESSED = 1
+	</query>
+	
+	<query id="getUnfinishedMessages">
+		SELECT A.* FROM (
+	
+		SELECT M.*, ROW_NUMBER() OVER (ORDER BY M.ID) AS ROWNUM
+		FROM D_M${localChannelId} M
+		JOIN D_MM${localChannelId} MM ON MM.MESSAGE_ID = M.ID AND MM.ID = 0
+		WHERE M.ID <![CDATA[ >= ]]> ? AND M.PROCESSED = 0 AND MM.SERVER_ID = ? AND MM.STATUS != 'R'
+		
+		) AS A WHERE A.ROWNUM <![CDATA[ <= ]]> ${limit}
+	</query>
+	
+	<query id="getPendingMessageIds">
+		SELECT A.* FROM (
+	
+		SELECT MESSAGE_ID, ROW_NUMBER() OVER (ORDER BY MESSAGE_ID) AS ROWNUM
+		FROM D_MM${localChannelId}
+		WHERE MESSAGE_ID <![CDATA[ >= ]]> ? AND ID > 0 AND STATUS = 'P' AND SERVER_ID = ?
+		GROUP BY MESSAGE_ID
+		
+		) AS A WHERE A.ROWNUM <![CDATA[ <= ]]> ${limit}
+	</query>
+	
+	<query id="getConnectorMessagesByMessageIdAndMetaDataIds">
+		SELECT *
+		FROM D_MM${localChannelId}
+		WHERE MESSAGE_ID = ?
+		AND ID IN (${metaDataIds})
+		ORDER BY CHAIN_ID ASC, ORDER_ID ASC
+	</query>
+
+	<query id="updateChannelStatisticsWithCase">
+		UPDATE D_MS${localChannelId}
+		SET RECEIVED = CASE WHEN RECEIVED + ? <![CDATA[ < ]]> 0 THEN 0 ELSE RECEIVED + ? END,
+			RECEIVED_LIFETIME = CASE WHEN RECEIVED_LIFETIME + ? <![CDATA[ < ]]> 0 THEN 0 ELSE RECEIVED_LIFETIME + ? END,
+			FILTERED = CASE WHEN FILTERED + ? <![CDATA[ < ]]> 0 THEN 0 ELSE FILTERED + ? END,
+			FILTERED_LIFETIME = CASE WHEN FILTERED_LIFETIME + ? <![CDATA[ < ]]> 0 THEN 0 ELSE FILTERED_LIFETIME + ? END,
+			SENT = CASE WHEN SENT + ? <![CDATA[ < ]]> 0 THEN 0 ELSE SENT + ? END,
+			SENT_LIFETIME = CASE WHEN SENT_LIFETIME + ? <![CDATA[ < ]]> 0 THEN 0 ELSE SENT_LIFETIME + ? END,
+			ERROR = CASE WHEN ERROR + ? <![CDATA[ < ]]> 0 THEN 0 ELSE ERROR + ? END,
+			ERROR_LIFETIME = CASE WHEN ERROR_LIFETIME + ? <![CDATA[ < ]]> 0 THEN 0 ELSE ERROR_LIFETIME + ? END
+		
+		WHERE METADATA_ID IS NULL
+		AND SERVER_ID = ?
+	</query>
+
+	<query id="updateConnectorStatisticsWithCase">
+		UPDATE D_MS${localChannelId}
+		SET RECEIVED = CASE WHEN RECEIVED + ? <![CDATA[ < ]]> 0 THEN 0 ELSE RECEIVED + ? END,
+			RECEIVED_LIFETIME = CASE WHEN RECEIVED_LIFETIME + ? <![CDATA[ < ]]> 0 THEN 0 ELSE RECEIVED_LIFETIME + ? END,
+			FILTERED = CASE WHEN FILTERED + ? <![CDATA[ < ]]> 0 THEN 0 ELSE FILTERED + ? END,
+			FILTERED_LIFETIME = CASE WHEN FILTERED_LIFETIME + ? <![CDATA[ < ]]> 0 THEN 0 ELSE FILTERED_LIFETIME + ? END,
+			SENT = CASE WHEN SENT + ? <![CDATA[ < ]]> 0 THEN 0 ELSE SENT + ? END,
+			SENT_LIFETIME = CASE WHEN SENT_LIFETIME + ? <![CDATA[ < ]]> 0 THEN 0 ELSE SENT_LIFETIME + ? END,
+			ERROR = CASE WHEN ERROR + ? <![CDATA[ < ]]> 0 THEN 0 ELSE ERROR + ? END,
+			ERROR_LIFETIME = CASE WHEN ERROR_LIFETIME + ? <![CDATA[ < ]]> 0 THEN 0 ELSE ERROR_LIFETIME + ? END
+		
+		WHERE METADATA_ID = ?
+		AND SERVER_ID = ?
+	</query>
+</queries>

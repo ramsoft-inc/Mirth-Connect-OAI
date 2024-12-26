@@ -1,0 +1,116 @@
+{
+    "severConfig": [
+    {
+        "channelName": "FHIR Subscriptions",
+        "AzureAD":
+        {
+            "ClientId": "6be67920-6bed-4ed5-b2a1-787ca31aba50",
+            "ClientSecret": "732fb77f-2d60-474d-baf6-52576d057035",
+            "Scope": "https://rsb2ctenant.onmicrosoft.com/team-noname-API/.default"
+        },
+        "ServerURI":
+        {
+            "FHIR": "https://team-noname-apim.azure-api.net/fhir/",
+            "WADO": "https://team-noname-apim.azure-api.net/dicom/wado/",
+            "STOW": "https://team-noname-apim.azure-api.net/dicom/stow/",
+            "AUTH": "https://team-noname-apim.azure-api.net/auth/"
+        }
+    },
+    {
+        "channelName": "Outbound FHIRJSON to HL7 XML",
+        "AzureAD":
+        {
+            "ClientId": "6be67920-6bed-4ed5-b2a1-787ca31aba50",
+            "ClientSecret": "732fb77f-2d60-474d-baf6-52576d057035",
+            "Scope": "https://rsb2ctenant.onmicrosoft.com/team-noname-API/.default"
+        },
+        "ServerURI":
+        {
+            "FHIR": "https://team-noname-apim.azure-api.net/fhir/",
+            "WADO": "https://team-noname-apim.azure-api.net/dicom/wado/",
+            "STOW": "https://team-noname-apim.azure-api.net/dicom/stow/",
+            "AUTH": "https://team-noname-apim.azure-api.net/auth/"
+        }
+    },
+    {
+        "channelName": "Outbound DB to FHIRJSON",
+        "AzureAD":
+        {
+            "ClientId": "6be67920-6bed-4ed5-b2a1-787ca31aba50",
+            "ClientSecret": "732fb77f-2d60-474d-baf6-52576d057035",
+            "Scope": "https://rsb2ctenant.onmicrosoft.com/team-noname-API/.default"
+        },
+        "ServerURI":
+        {
+            "FHIR": "https://team-noname-apim.azure-api.net/fhir/",
+            "WADO": "https://team-noname-apim.azure-api.net/dicom/wado/",
+            "STOW": "https://team-noname-apim.azure-api.net/dicom/stow/",
+            "AUTH": "https://team-noname-apim.azure-api.net/auth/",
+            "SubscriptionUID": "6be67920-6bed-4ed5-b2a1-787ca31aba50"
+        }
+    },
+    {
+        "channelName": "Inbound HL7 to FHIRJSON",
+        "AzureAD":
+        {
+            "ClientId": "6be67920-6bed-4ed5-b2a1-787ca31aba50",
+            "ClientSecret": "732fb77f-2d60-474d-baf6-52576d057035",
+            "Scope": "https://rsb2ctenant.onmicrosoft.com/team-noname-API/.default"
+        },
+        "ServerURI":
+        {
+            "FHIR": "https://team-noname-apim.azure-api.net/fhir/",
+            "WADO": "https://team-noname-apim.azure-api.net/dicom/wado/",
+            "STOW": "https://team-noname-apim.azure-api.net/dicom/stow/",
+            "AUTH": "https://team-noname-apim.azure-api.net/auth/"
+        }
+    },
+    {
+        "channelName": "Inbound FHIRJSON to DB",
+        "AzureAD":
+        {
+            "ClientId": "6be67920-6bed-4ed5-b2a1-787ca31aba50",
+            "ClientSecret": "732fb77f-2d60-474d-baf6-52576d057035",
+            "Scope": "https://rsb2ctenant.onmicrosoft.com/team-noname-API/.default"
+        },
+        "ServerURI":
+        {
+            "FHIR": "https://team-noname-apim.azure-api.net/fhir/",
+            "WADO": "https://team-noname-apim.azure-api.net/dicom/wado/",
+            "STOW": "https://team-noname-apim.azure-api.net/dicom/stow/",
+            "AUTH": "https://team-noname-apim.azure-api.net/auth/"
+        }
+    },
+    {
+        "channelName": "Inbound Automator",
+        "AzureAD":
+        {
+            "ClientId": "6be67920-6bed-4ed5-b2a1-787ca31aba50",
+            "ClientSecret": "732fb77f-2d60-474d-baf6-52576d057035",
+            "Scope": "https://rsb2ctenant.onmicrosoft.com/team-noname-API/.default"
+        },
+        "ServerURI":
+        {
+            "FHIR": "https://team-noname-apim.azure-api.net/fhir/",
+            "WADO": "https://team-noname-apim.azure-api.net/dicom/wado/",
+            "STOW": "https://team-noname-apim.azure-api.net/dicom/stow/",
+            "AUTH": "https://team-noname-apim.azure-api.net/auth/"
+        }
+    },
+    {
+        "channelName": "Check Mirth Health",
+        "AzureAD":
+        {
+            "ClientId": "6be67920-6bed-4ed5-b2a1-787ca31aba50",
+            "ClientSecret": "732fb77f-2d60-474d-baf6-52576d057035",
+            "Scope": "https://rsb2ctenant.onmicrosoft.com/team-noname-API/.default"
+        },
+        "ServerURI":
+        {
+            "FHIR": "https://team-noname-apim.azure-api.net/fhir/",
+            "WADO": "https://team-noname-apim.azure-api.net/dicom/wado/",
+            "STOW": "https://team-noname-apim.azure-api.net/dicom/stow/",
+            "AUTH": "https://team-noname-apim.azure-api.net/auth/"
+        }
+    }]
+}
