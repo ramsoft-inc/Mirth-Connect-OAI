@@ -177,4 +177,18 @@ public class MessageController {
             }         
          }
     }
+    
+    /* 
+     * Issue #36350
+     * This custom function performs deleting message attachments
+     * */
+    public void deleteMessageAttachment(String channelId, Long messageId) {
+        DonkeyDao dao = donkey.getDaoFactory().getDao();
+        try {
+            dao.deleteMessageAttachments(channelId, messageId);
+            dao.commit();
+        } finally {
+            dao.close();
+        }
+    }
 }
