@@ -1,0 +1,47 @@
+# Builds custom-lib/com.ramsoft.logging.jar (RamsoftAsyncHttpAppender) and runs its unit tests.
+# The jar it uploads is the one to put into a Mirth update package: it is traceable to the commit,
+# unlike a jar built on a workstation.
+name: ramsoft-logging
+
+on:
+  pull_request:
+    paths:
+      - 'connect-4.4.2/server/src/com/ramsoft/logging/**'
+      - 'connect-4.4.2/server/test/com/ramsoft/logging/**'
+      - 'connect-4.4.2/server/build-ramsoft-logging.ps1'
+      - '.github/workflows/ramsoft-logging.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'connect-4.4.2/server/src/com/ramsoft/logging/**'
+      - 'connect-4.4.2/server/test/com/ramsoft/logging/**'
+      - 'connect-4.4.2/server/build-ramsoft-logging.ps1'
+      - '.github/workflows/ramsoft-logging.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # javac --release 8 needs JDK 9+; the jar still loads on the Java 8+ JVMs Mirth 4.4.2 runs on.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build and run unit tests
+        shell: pwsh
+        run: ./connect-4.4.2/server/build-ramsoft-logging.ps1
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: com.ramsoft.logging-${{ github.sha }}
+          path: connect-4.4.2/server/build/ramsoft-logging/com.ramsoft.logging.jar
+          if-no-files-found: error

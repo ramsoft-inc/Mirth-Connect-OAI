@@ -49,7 +49,10 @@ if (-not $SkipTests) {
     $tests = @(Get-ChildItem (Join-Path $root 'test/com/ramsoft/logging') -Filter *Test.java | ForEach-Object FullName)
     & javac --release 8 -proc:none -encoding UTF-8 -d $testClasses -cp (($testCp + $classes) -join $sep) $tests
     if ($LASTEXITCODE -ne 0) { throw 'javac (test) failed' }
-    & java -cp (($testCp + $classes + $testClasses) -join $sep) org.junit.runner.JUnitCore com.ramsoft.logging.RamsoftAsyncHttpAppenderTest
+    # Every compiled *Test class runs, so a new test class cannot build and then silently never run.
+    $testClassNames = @(Get-ChildItem (Join-Path $root 'test/com/ramsoft/logging') -Filter *Test.java |
+        ForEach-Object { 'com.ramsoft.logging.' + $_.BaseName })
+    & java -cp (($testCp + $classes + $testClasses) -join $sep) org.junit.runner.JUnitCore $testClassNames
     if ($LASTEXITCODE -ne 0) { throw 'unit tests failed' }
 }
 

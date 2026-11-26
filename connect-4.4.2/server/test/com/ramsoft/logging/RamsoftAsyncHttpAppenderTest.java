@@ -10,11 +10,13 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.Serializable;
 import java.net.InetSocketAddress;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -24,6 +26,9 @@ import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.impl.Log4jLogEvent;
 import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.apache.logging.log4j.message.SimpleMessage;
+import org.apache.logging.log4j.status.StatusData;
+import org.apache.logging.log4j.status.StatusListener;
+import org.apache.logging.log4j.status.StatusLogger;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -167,6 +172,72 @@ public class RamsoftAsyncHttpAppenderTest {
             }
         }
         return n;
+    }
+
+    /**
+     * Flusher threads once the count reaches {@code expected}, or after 3 s. stop() ends with
+     * shutdownNow(), which only interrupts, so a stopped appender's thread can outlive stop() briefly.
+     */
+    private static int awaitFlusherThreads(int expected) throws InterruptedException {
+        long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        int n = flusherThreads();
+        while (n != expected && System.nanoTime() < end) {
+            Thread.sleep(20);
+            n = flusherThreads();
+        }
+        return n;
+    }
+
+    private static String repeat(char c, int n) {
+        StringBuilder sb = new StringBuilder(n);
+        for (int i = 0; i < n; i++) {
+            sb.append(c);
+        }
+        return sb.toString();
+    }
+
+    private static LogEvent eventWithError(String message, String thread, Throwable thrown) {
+        return Log4jLogEvent.newBuilder()
+                .setLoggerName("com.mirth.connect.transformer")
+                .setLevel(Level.ERROR)
+                .setThreadName(thread)
+                .setTimeMillis(System.currentTimeMillis())
+                .setMessage(new SimpleMessage(message))
+                .setThrown(thrown)
+                .build();
+    }
+
+    /** Collects what the appender writes to the log4j status logger. */
+    private static final class StatusCapture implements StatusListener {
+        final List<StatusData> data = Collections.synchronizedList(new ArrayList<StatusData>());
+
+        @Override
+        public void log(StatusData d) {
+            if (d.getMessage().getFormattedMessage().contains("RamsoftHttpAppender")) {
+                data.add(d);
+            }
+        }
+
+        @Override
+        public Level getStatusLevel() {
+            return Level.WARN;
+        }
+
+        @Override
+        public void close() {
+        }
+
+        List<String> messages(Level level) {
+            List<String> out = new ArrayList<>();
+            synchronized (data) {
+                for (StatusData d : data) {
+                    if (d.getLevel() == level) {
+                        out.add(d.getMessage().getFormattedMessage());
+                    }
+                }
+            }
+            return out;
+        }
     }
 
     @Test(timeout = 20000)
@@ -516,7 +587,7 @@ public class RamsoftAsyncHttpAppenderTest {
     }
 
     @Test(timeout = 20000)
-    public void nothingIsSentOrQueuedWithoutAnEndpoint() throws Exception {
+    public void nothingIsSentOrQueuedWithoutAnEndpointButTheEventsAreCounted() throws Exception {
         RamsoftAsyncHttpAppender appender = newAppender("", 100, 500, 1_000_000, 10_000);
         for (int i = 0; i < 10; i++) {
             appender.append(event("line " + i, "main"));
@@ -524,35 +595,42 @@ public class RamsoftAsyncHttpAppenderTest {
         Thread.sleep(400);
         assertTrue(bodies.isEmpty());
         assertTrue(appender.getStats(), appender.getStats().contains("queued=0"));
+        assertTrue(appender.getStats(), appender.getStats().contains("droppedPending=10"));
     }
 
     @Test(timeout = 20000)
-    public void updateEndpointAndPatternRedirectsLaterBatches() throws Exception {
+    public void updateEndpointAndPatternRedirectsLaterBatchesAndReportsWhatCameBefore() throws Exception {
         RamsoftAsyncHttpAppender appender = newAppender("", NEVER, 500, 1_000_000, 10_000);
         appender.append(event("before endpoint", "main"));
+        appender.append(event("also before endpoint", "main"));
 
         appender.updateEndpointAndPattern(url, "rotated-key", layout());
         appender.append(event("after endpoint", "main"));
         appender.flush();
 
         assertEquals(1, bodies.size());
-        List<JsonObject> entries = allEntries();
-        assertEquals(1, entries.size());
-        assertEquals("after endpoint", entries.get(0).get("message").getAsString());
         assertEquals("subscription-key=rotated-key", queries.get(0));
+        List<JsonObject> shipped = entriesFromLogger("transformer");
+        assertEquals(1, shipped.size());
+        assertEquals("after endpoint", shipped.get(0).get("message").getAsString());
+        List<JsonObject> reports = entriesFromLogger(RamsoftAsyncHttpAppender.DROP_REPORT_LOGGER);
+        assertEquals(1, reports.size());
+        String report = reports.get(0).get("message").getAsString();
+        assertTrue(report, report.contains("dropped 2 "));
+        assertTrue(report, report.contains("no endpoint yet: 2"));
     }
 
     @Test(timeout = 20000)
     public void aSecondRegistrationUnderTheSameNameStartsNoThreadAndForwardsUpdatesToTheRunningOne() throws Exception {
-        int threadsBefore = flusherThreads();
+        int threadsBefore = awaitFlusherThreads(0);
         RamsoftAsyncHttpAppender attached = newAppender(url, NEVER, 500, 1_000_000, 10_000);
-        assertEquals(threadsBefore + 1, flusherThreads());
+        assertEquals(threadsBefore + 1, awaitFlusherThreads(threadsBefore + 1));
 
         // What Global Scripts does after "Redeploy All" cleared the global map.
         RamsoftAsyncHttpAppender second = newAppender("", "", NEVER, 500, 1_000_000, 10_000, 16_000_000);
         assertTrue(second.isStarted());
         assertTrue(second.isStandIn());
-        assertEquals("the second registration must not start its own flusher", threadsBefore + 1, flusherThreads());
+        assertEquals("the second registration must not start its own flusher", threadsBefore + 1, awaitFlusherThreads(threadsBefore + 1));
 
         // What "Check Mirth Health" does: it holds the second instance (from the global map).
         second.updateEndpointAndPattern(url, "rotated-key", layout());
@@ -565,7 +643,7 @@ public class RamsoftAsyncHttpAppenderTest {
         second.stop(5, TimeUnit.SECONDS);
         assertTrue("stopping the stand-in must not stop the running appender", attached.isStarted());
         attached.stop(5, TimeUnit.SECONDS);
-        assertEquals(threadsBefore, flusherThreads());
+        assertEquals(threadsBefore, awaitFlusherThreads(threadsBefore));
 
         // Once the running one has stopped, a new registration ships on its own again.
         RamsoftAsyncHttpAppender third = newAppender(url, NEVER, 500, 1_000_000, 10_000);
@@ -574,7 +652,7 @@ public class RamsoftAsyncHttpAppenderTest {
 
     @Test(timeout = 20000)
     public void aStandInTakesOverWhenTheAppenderItStoodInForHasStopped() throws Exception {
-        int threadsBefore = flusherThreads();
+        int threadsBefore = awaitFlusherThreads(0);
         RamsoftAsyncHttpAppender first = newAppender(url, NEVER, 500, 1_000_000, 10_000);
         RamsoftAsyncHttpAppender second = newAppender("", "", NEVER, 500, 1_000_000, 10_000, 16_000_000);
         assertTrue(second.isStandIn());
@@ -583,7 +661,7 @@ public class RamsoftAsyncHttpAppenderTest {
         second.updateEndpointAndPattern(url, "after-takeover", layout()); // must not go to the stopped one
 
         assertFalse("with nothing left to stand in for, it ships itself", second.isStandIn());
-        assertEquals(threadsBefore + 1, flusherThreads());
+        assertEquals(threadsBefore + 1, awaitFlusherThreads(threadsBefore + 1));
         second.append(event("shipped by the former stand-in", "main"));
         second.flush();
 
@@ -603,5 +681,258 @@ public class RamsoftAsyncHttpAppenderTest {
         assertEquals(3, allEntries().size());
         assertTrue(appender.isStopped());
         assertFalse(entriesFromLogger("transformer").isEmpty());
+    }
+
+    // --- Malformed layout output (an unescaped device name, a bare %t) must not poison a batch -------
+
+    @Test(timeout = 20000)
+    public void anEventTheLayoutRendersAsInvalidJsonIsRebuiltAndTheRestOfTheBatchIsDelivered() throws Exception {
+        RamsoftAsyncHttpAppender appender = newAppender(url, NEVER, 500, 1_000_000, 10_000);
+        appender.append(event("before", CHANNEL_THREAD));
+        // What "Check Mirth Health" builds when the device identifier contains a quote.
+        appender.updateEndpointAndPattern(url, "test-key", PatternLayout.newBuilder()
+                .withPattern(PATTERN.replace("unit-test", "device\"7")).build());
+        appender.append(eventWithError("broken by the layout", CHANNEL_THREAD, new IllegalStateException("boom")));
+        appender.append(event("also broken", "main"));
+        appender.flush();
+
+        assertEquals(1, bodies.size());
+        JsonArray batch = array(bodies.get(0)); // the receiver parses the whole body as one array
+        assertEquals(3, batch.size());
+        assertEquals("before", batch.get(0).getAsJsonObject().get("message").getAsString());
+        assertFalse(batch.get(0).getAsJsonObject().has("Properties"));
+
+        JsonObject rebuilt = batch.get(1).getAsJsonObject();
+        assertEquals("broken by the layout", rebuilt.get("message").getAsString());
+        assertEquals("ERROR", rebuilt.get("level").getAsString());
+        assertEquals("transformer", rebuilt.get("logger").getAsString());
+        assertEquals(CHANNEL_THREAD, rebuilt.get("thread").getAsString());
+        assertTrue(rebuilt.get("exception").getAsString().contains("IllegalStateException: boom"));
+        assertEquals("Outbound OAI Polling", rebuilt.get("channelName").getAsString());
+        assertEquals("Subscription Handle", rebuilt.get("connectorName").getAsString());
+        assertEquals("MirthConnectService", rebuilt.get("service").getAsString());
+        assertEquals("key and service come from the last valid render", "unit-test", rebuilt.get("key").getAsString());
+        assertTrue(rebuilt.getAsJsonObject("Properties").has(RamsoftAsyncHttpAppender.REBUILT_PROPERTY));
+        assertEquals("also broken", batch.get(2).getAsJsonObject().get("message").getAsString());
+        assertTrue(appender.getStats(), appender.getStats().contains("rebuilt=2"));
+    }
+
+    @Test(timeout = 20000)
+    public void aBareThreadNameWithAQuoteIsRebuiltRatherThanSentAsInvalidJson() throws Exception {
+        RamsoftAsyncHttpAppender appender = newAppender(url, NEVER, 500, 1_000_000, 10_000);
+        // The Global Scripts registration layout writes %t without %enc.
+        appender.updateEndpointAndPattern(url, "test-key", PatternLayout.newBuilder()
+                .withPattern(PATTERN.replace("%enc{%t}{JSON}", "%t")).build());
+        String thread = "JavaScript Writer on Send \"ADT\" (b06969aa-6233-4fde-a1ce-6238c9ae0c58), Dest (1) < pool-1-thread-9";
+        appender.append(event("quoted thread", thread));
+        appender.append(event("plain thread", "main"));
+        appender.flush();
+
+        JsonArray batch = array(bodies.get(0));
+        assertEquals(2, batch.size());
+        assertEquals(thread, batch.get(0).getAsJsonObject().get("thread").getAsString());
+        assertTrue(batch.get(0).getAsJsonObject().has("Properties"));
+        assertFalse("a valid render is sent as the layout made it", batch.get(1).getAsJsonObject().has("Properties"));
+    }
+
+    @Test(timeout = 20000)
+    public void aLayoutThatNeverRendersValidJsonStillDeliversEventsAndDropReports() throws Exception {
+        statusToReturn.set(503);
+        RamsoftAsyncHttpAppender appender = new RamsoftAsyncHttpAppender("RamsoftHttp", null,
+                PatternLayout.newBuilder().withPattern(PATTERN.replace("unit-test", "device\"7")).build(),
+                false, url, "test-key", (int) NEVER, 500, 1_000_000, 10_000, 16_000_000);
+        appenders.add(appender);
+        appender.start();
+        appender.append(event("lost", "main"));
+        appender.flush();
+
+        statusToReturn.set(200);
+        appender.append(event("delivered", "main"));
+        appender.flush();
+
+        JsonArray second = array(bodies.get(1));
+        assertEquals(2, second.size());
+        assertEquals("delivered", second.get(0).getAsJsonObject().get("message").getAsString());
+        JsonObject report = second.get(1).getAsJsonObject();
+        assertEquals(RamsoftAsyncHttpAppender.DROP_REPORT_LOGGER, report.get("logger").getAsString());
+        assertTrue(report.get("message").getAsString().contains("send failed: 1"));
+        assertFalse("no valid render, so no key to borrow", report.has("key"));
+        assertFalse("a drop report is built by the appender, not rebuilt from a broken render", report.has("Properties"));
+    }
+
+    @Test(timeout = 20000)
+    public void anEmptyObjectFromTheLayoutStillGetsValidChannelFields() throws Exception {
+        RamsoftAsyncHttpAppender appender = newAppender(url, NEVER, 500, 1_000_000, 10_000);
+        appender.updateEndpointAndPattern(url, "test-key", PatternLayout.newBuilder().withPattern("{ }%n").build());
+        appender.append(event("x", CHANNEL_THREAD));
+        appender.flush();
+
+        JsonObject entry = array(bodies.get(0)).get(0).getAsJsonObject();
+        assertEquals("Outbound OAI Polling", entry.get("channelName").getAsString());
+        assertFalse(entry.has("Properties"));
+    }
+
+    // --- Size is measured as sent: UTF-8 bytes -------------------------------------------------------
+
+    @Test(timeout = 20000)
+    public void batchesAreCappedByUtf8BytesNotCharacters() throws Exception {
+        RamsoftAsyncHttpAppender appender = newAppender(url, NEVER, 500, 3_000, 10_000);
+        String cjk = repeat('中', 300); // 300 chars, 900 bytes
+        for (int i = 0; i < 10; i++) {
+            appender.append(event(i + cjk, "main"));
+        }
+        appender.stop(5, TimeUnit.SECONDS);
+
+        assertEquals(10, entriesFromLogger("transformer").size());
+        assertEquals("the multi-byte text must really be on the wire", "0" + cjk,
+                entriesFromLogger("transformer").get(0).get("message").getAsString());
+        for (String body : bodies) {
+            int bytes = body.getBytes(StandardCharsets.UTF_8).length;
+            assertTrue("a batch over the cap may only hold a single event: " + bytes + " bytes",
+                    bytes <= 3_000 || array(body).size() == 1);
+        }
+    }
+
+    @Test(timeout = 20000)
+    public void nonAsciiTextArrivesIntactWhateverCharsetTheLayoutWasBuiltWith() throws Exception {
+        // Global Scripts and "Check Mirth Health" build the layout without a charset; on Windows that is
+        // windows-1252, which cannot even represent most of this.
+        String text = "Françoise Müller, 中文, Здраво, 😀";
+        RamsoftAsyncHttpAppender appender = newAppender(url, NEVER, 500, 1_000_000, 10_000);
+        appender.updateEndpointAndPattern(url, "test-key", PatternLayout.newBuilder()
+                .withPattern(PATTERN).withCharset(Charset.forName("windows-1252")).build());
+        appender.append(event(text, "main"));
+        appender.flush();
+
+        JsonObject entry = allEntries().get(0);
+        assertEquals(text, entry.get("message").getAsString());
+        assertFalse(entry.has("Properties"));
+    }
+
+    @Test
+    public void utf8LengthMatchesTheEncoder() {
+        String[] samples = {"", "ascii", "café", "中文", "emoji 😀", "lone \ud83d high", "\u0000\u007f\u0080߿ࠀ￿"};
+        for (String s : samples) {
+            int encoded = s.getBytes(StandardCharsets.UTF_8).length;
+            int counted = RamsoftAsyncHttpAppender.utf8Length(s);
+            assertTrue(s + ": counted " + counted + ", encoded " + encoded, counted >= encoded);
+            if (!s.contains("lone")) {
+                assertEquals(s, encoded, counted);
+            }
+        }
+    }
+
+    // --- Lifecycle -----------------------------------------------------------------------------------
+
+    @Test(timeout = 20000)
+    public void aStartAfterAStopShipsAgain() throws Exception {
+        int threadsBefore = awaitFlusherThreads(0);
+        RamsoftAsyncHttpAppender appender = newAppender(url, NEVER, 500, 1_000_000, 10_000);
+        appender.stop(5, TimeUnit.SECONDS);
+        assertEquals(threadsBefore, awaitFlusherThreads(threadsBefore));
+
+        appender.start();
+        assertEquals(threadsBefore + 1, awaitFlusherThreads(threadsBefore + 1));
+        appender.append(event("after restart", "main"));
+        appender.flush();
+        assertEquals("after restart", allEntries().get(0).get("message").getAsString());
+    }
+
+    @Test(timeout = 20000)
+    public void startingTwiceStartsOneFlusher() throws Exception {
+        int threadsBefore = awaitFlusherThreads(0);
+        RamsoftAsyncHttpAppender appender = newAppender(url, NEVER, 500, 1_000_000, 10_000);
+        appender.start();
+        assertFalse(appender.isStandIn());
+        assertEquals(threadsBefore + 1, awaitFlusherThreads(threadsBefore + 1));
+        appender.stop(5, TimeUnit.SECONDS);
+        assertEquals("no orphaned flusher left running", threadsBefore, awaitFlusherThreads(threadsBefore));
+    }
+
+    @Test(timeout = 60000)
+    public void registrationsStartingAtTheSameTimeLeaveExactlyOneShipper() throws Exception {
+        int threadsBefore = awaitFlusherThreads(0);
+        for (int round = 0; round < 40; round++) {
+            final int n = 6;
+            final String name = "RamsoftHttp-race-" + round;
+            final CyclicBarrier barrier = new CyclicBarrier(n);
+            final List<RamsoftAsyncHttpAppender> started = Collections.synchronizedList(new ArrayList<RamsoftAsyncHttpAppender>());
+            List<Thread> threads = new ArrayList<>();
+            for (int i = 0; i < n; i++) {
+                Thread t = new Thread(() -> {
+                    RamsoftAsyncHttpAppender a = new RamsoftAsyncHttpAppender(name, null, layout(), false, url, "k",
+                            (int) NEVER, 500, 1_000_000, 10_000, 16_000_000);
+                    started.add(a);
+                    try {
+                        barrier.await();
+                    } catch (Exception e) {
+                        throw new IllegalStateException(e);
+                    }
+                    a.start();
+                });
+                threads.add(t);
+                t.start();
+            }
+            for (Thread t : threads) {
+                t.join();
+            }
+            appenders.addAll(started);
+            int shippers = 0;
+            for (RamsoftAsyncHttpAppender a : started) {
+                if (!a.isStandIn()) {
+                    shippers++;
+                }
+            }
+            assertEquals("round " + round + ": shipping instances", 1, shippers);
+            assertEquals("round " + round + ": flusher threads", threadsBefore + 1, awaitFlusherThreads(threadsBefore + 1));
+            for (RamsoftAsyncHttpAppender a : started) {
+                a.stop(5, TimeUnit.SECONDS);
+            }
+            assertEquals(threadsBefore, awaitFlusherThreads(threadsBefore));
+        }
+    }
+
+    @Test(timeout = 30000)
+    public void stopKeepsToACallerTimeoutShorterThanTheBudget() throws Exception {
+        responseDelayMs = 300;
+        RamsoftAsyncHttpAppender appender = newAppender(url, NEVER, 10, 1_000_000, 10_000);
+        appender.finalFlushBudgetMs = 10_000;
+        for (int i = 0; i < 300; i++) {
+            appender.append(event("pending " + i, "main"));
+        }
+        long start = System.nanoTime();
+        appender.stop(1, TimeUnit.SECONDS);
+        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+        assertTrue("stop(1 s) took " + elapsedMs + " ms", elapsedMs < 2_500);
+    }
+
+    // --- A failing gateway leaves a local trace ------------------------------------------------------
+
+    @Test(timeout = 20000)
+    public void aRunOfFailedSendsIsWrittenToTheStatusLoggerOnceAndSoIsTheRecovery() throws Exception {
+        StatusCapture capture = new StatusCapture();
+        StatusLogger.getLogger().registerListener(capture);
+        try {
+            statusToReturn.set(401); // e.g. a rotated subscription key
+            RamsoftAsyncHttpAppender appender = newAppender(url, NEVER, 500, 1_000_000, 10_000);
+            for (int i = 0; i < 3; i++) {
+                appender.append(event("lost " + i, "main"));
+                appender.flush();
+            }
+            List<String> errors = capture.messages(Level.ERROR);
+            assertEquals(errors.toString(), 1, errors.size());
+            assertTrue(errors.get(0), errors.get(0).contains("HTTP 401"));
+            assertFalse("the subscription key must not be logged", errors.get(0).contains("test-key"));
+
+            statusToReturn.set(200);
+            appender.append(event("delivered", "main"));
+            appender.flush();
+            appender.append(event("delivered again", "main"));
+            appender.flush();
+            assertEquals(1, capture.messages(Level.WARN).size());
+            assertEquals(1, capture.messages(Level.ERROR).size());
+        } finally {
+            StatusLogger.getLogger().removeListener(capture);
+        }
     }
 }
