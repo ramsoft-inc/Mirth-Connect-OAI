@@ -104,8 +104,8 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
     /** The instance that ships logs, per appender name. */
     private static final ConcurrentMap<String, RamsoftAsyncHttpAppender> RUNNING = new ConcurrentHashMap<>();
 
-    private volatile String url;
-    private volatile String subscriptionKey;
+    /** URL and key as one snapshot, so a request never pairs an old URL with a new key or the reverse. */
+    private volatile Endpoint endpoint;
     private volatile Layout<? extends Serializable> dynamicLayout;
     /** service/key from the last event the layout rendered as valid JSON; put on events the appender rebuilds. */
     private volatile Identity identity;
@@ -134,6 +134,11 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
 
     /** True while this instance is the one shipping for its name. Written under {@link #CLAIM_LOCK}. */
     private volatile boolean shipping;
+    /**
+     * True while stop() sends this instance's backlog. It still owns the name, so an instance starting
+     * meanwhile stands in for it instead of shipping alongside (and overtaking) the backlog.
+     */
+    private volatile boolean draining;
     /** Set when this instance ships. */
     private volatile OkHttpClient httpClient;
     private volatile ScheduledExecutorService flusher;
@@ -166,8 +171,7 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
                                      int maxQueueEvents, int maxQueueChars) {
         super(name, filter, layout, ignoreExceptions, Property.EMPTY_ARRAY);
         this.dynamicLayout = layout;
-        this.url = url;
-        this.subscriptionKey = subscriptionKey;
+        this.endpoint = new Endpoint(url, subscriptionKey);
         this.flushIntervalMs = Math.max(50, flushIntervalMs);
         this.maxBatchEvents = Math.max(2, maxBatchEvents); // one slot is kept for a drop report
         this.maxBatchBytes = Math.max(1, maxBatchBytes);
@@ -184,8 +188,9 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
         super.start();
     }
 
+    /** Owns the name: ships, or is still sending its backlog after stop(). */
     private static boolean isShipping(RamsoftAsyncHttpAppender a) {
-        return a.shipping && !a.stopRequested;
+        return (a.shipping && !a.stopRequested) || a.draining;
     }
 
     /** Becomes the shipping instance for this name, or a stand-in for the one that already is. */
@@ -245,8 +250,7 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
 
     // ✅ Allow layout + endpoint update after deploy
     public synchronized void updateEndpointAndPattern(String url, String subscriptionKey, Layout<? extends Serializable> layout) {
-        this.url = url;
-        this.subscriptionKey = subscriptionKey;
+        this.endpoint = new Endpoint(url, subscriptionKey);
         this.dynamicLayout = layout;
         RamsoftAsyncHttpAppender running = liveRunningInstance();
         if (running != null) {
@@ -311,10 +315,14 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
             return;
         }
         try {
-            String target = url;
-            if (target == null || target.isEmpty()) {
+            if (!endpoint.isSet()) {
                 // Before "Check Mirth Health" sets the endpoint (Mirth startup). Reported once it is set.
                 droppedNoEndpoint.incrementAndGet();
+                return;
+            }
+            if (queue.remainingCapacity() == 0 || queuedChars.get() >= maxQueueChars) {
+                // Full: drop before rendering and redacting, so a backlog costs the channel thread nothing.
+                dropQueueFull();
                 return;
             }
             String rendered = toJson(event);
@@ -493,9 +501,11 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
         try {
             flushLock.lock();
             try {
-                // An early flush may have been queued while a request was in flight; if that request
-                // failed, backing off wins and the scheduled flush is the only one that tries again.
-                if (!(early && lastSendFailed)) {
+                // An early flush may have been queued while a request was in flight. If that request
+                // failed, backing off wins; if the flush that was running already sent the full batch,
+                // what is left is partial and waits for the interval. Either way this one sends nothing.
+                boolean stale = lastSendFailed || !(carryOver != null || fullBatchWaiting());
+                if (!(early && stale)) {
                     flushLocked(false, 0L);
                 }
             } finally {
@@ -531,8 +541,7 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
             if (drain && System.nanoTime() - deadlineNanos > 0) {
                 return;
             }
-            String target = url;
-            if (target == null || target.isEmpty()) {
+            if (!endpoint.isSet()) {
                 return; // nothing can be delivered yet; counts wait for an endpoint
             }
             long full = droppedQueueFull.getAndSet(0);
@@ -641,10 +650,11 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
 
     /** POSTs one batch; returns null on a 2xx, otherwise why it failed. Never retried. */
     private String send(List<Entry> batch) {
-        String target = url;
-        String key = subscriptionKey;
+        Endpoint ep = endpoint;
+        String target = ep.url;
+        String key = ep.key;
         OkHttpClient client = httpClient;
-        if (target == null || target.isEmpty() || client == null) {
+        if (!ep.isSet() || client == null) {
             return "no endpoint";
         }
         StringBuilder body = new StringBuilder(2 + bodyBytes(batch));
@@ -693,14 +703,21 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
             stopRequested = true;
             wasShipping = shipping;
             shipping = false;
+            draining = wasShipping; // keeps the name until the backlog is sent
         }
         if (wasShipping) {
             long budgetMs = finalFlushBudgetMs;
             if (timeout > 0) {
                 budgetMs = Math.min(budgetMs, timeUnit.toMillis(timeout));
             }
-            stopShipping(budgetMs);
-            RUNNING.remove(getName(), this);
+            try {
+                stopShipping(budgetMs);
+            } finally {
+                synchronized (CLAIM_LOCK) {
+                    RUNNING.remove(getName(), this);
+                    draining = false; // a stand-in takes over on its next append or endpoint update
+                }
+            }
         }
         boolean stopped = super.stop(timeout, timeUnit, false);
         setStopped();
@@ -757,6 +774,20 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
         Entry(String json) {
             this.json = json;
             this.bytes = utf8Length(json);
+        }
+    }
+
+    private static final class Endpoint {
+        final String url;
+        final String key;
+
+        Endpoint(String url, String key) {
+            this.url = url;
+            this.key = key;
+        }
+
+        boolean isSet() {
+            return url != null && !url.isEmpty();
         }
     }
 

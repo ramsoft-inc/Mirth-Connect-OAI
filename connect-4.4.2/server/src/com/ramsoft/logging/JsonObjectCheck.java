@@ -197,7 +197,7 @@ final class JsonObjectCheck {
                     }
                     int cp = 0;
                     for (int i = 0; i < 4; i++) {
-                        int digit = Character.digit(s.charAt(pos + i), 16);
+                        int digit = hexDigit(s.charAt(pos + i));
                         if (digit < 0) {
                             throw MALFORMED;
                         }
@@ -213,6 +213,20 @@ final class JsonObjectCheck {
                 sb.append(decoded);
             }
         }
+    }
+
+    /** ASCII hex only: Character.digit() also accepts full-width and other Unicode digits, which JSON does not. */
+    private static int hexDigit(char c) {
+        if (c >= '0' && c <= '9') {
+            return c - '0';
+        }
+        if (c >= 'a' && c <= 'f') {
+            return c - 'a' + 10;
+        }
+        if (c >= 'A' && c <= 'F') {
+            return c - 'A' + 10;
+        }
+        return -1;
     }
 
     private void number() {

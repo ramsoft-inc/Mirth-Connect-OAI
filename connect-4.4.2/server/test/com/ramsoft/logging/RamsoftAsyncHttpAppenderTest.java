@@ -17,6 +17,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -24,6 +26,7 @@ import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.Layout;
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.impl.Log4jLogEvent;
+import org.apache.logging.log4j.core.layout.AbstractStringLayout;
 import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.apache.logging.log4j.message.SimpleMessage;
 import org.apache.logging.log4j.status.StatusData;
@@ -62,28 +65,41 @@ public class RamsoftAsyncHttpAppenderTest {
     private volatile CountDownLatch arrivedLatch = new CountDownLatch(0);
     private String url;
     private final List<RamsoftAsyncHttpAppender> appenders = new ArrayList<>();
+    /** Requests being handled right now, and the most at once: two shippers would show up as 2. */
+    private final AtomicInteger inFlight = new AtomicInteger();
+    private final AtomicInteger maxInFlight = new AtomicInteger();
+    private ExecutorService serverThreads;
 
     @Before
     public void startServer() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/LogReceiver", exchange -> {
-            bodies.add(readAll(exchange.getRequestBody()));
-            queries.add(exchange.getRequestURI().getRawQuery());
-            arrivedLatch.countDown();
-            if (responseDelayMs > 0) {
-                try {
-                    Thread.sleep(responseDelayMs);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
+            int now = inFlight.incrementAndGet();
+            maxInFlight.accumulateAndGet(now, Math::max);
+            try {
+                bodies.add(readAll(exchange.getRequestBody()));
+                queries.add(exchange.getRequestURI().getRawQuery());
+                arrivedLatch.countDown();
+                if (responseDelayMs > 0) {
+                    try {
+                        Thread.sleep(responseDelayMs);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
                 }
-            }
-            byte[] reply = "ok".getBytes(StandardCharsets.UTF_8);
-            exchange.sendResponseHeaders(statusToReturn.get(), reply.length);
-            try (OutputStream os = exchange.getResponseBody()) {
-                os.write(reply);
+                byte[] reply = "ok".getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(statusToReturn.get(), reply.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(reply);
+                }
+            } finally {
+                inFlight.decrementAndGet();
             }
             requestLatch.countDown();
         });
+        // Concurrent handling, so overlapping senders are visible in maxInFlight.
+        serverThreads = Executors.newCachedThreadPool();
+        server.setExecutor(serverThreads);
         server.start();
         url = "http://127.0.0.1:" + server.getAddress().getPort() + "/LogReceiver";
     }
@@ -97,6 +113,7 @@ public class RamsoftAsyncHttpAppenderTest {
             }
         }
         server.stop(0);
+        serverThreads.shutdownNow();
     }
 
     private RamsoftAsyncHttpAppender newAppender(String target, long flushMs, int maxEvents, int maxChars, int maxQueue) {
@@ -770,6 +787,81 @@ public class RamsoftAsyncHttpAppenderTest {
         JsonObject entry = array(bodies.get(0)).get(0).getAsJsonObject();
         assertEquals("Outbound OAI Polling", entry.get("channelName").getAsString());
         assertFalse(entry.has("Properties"));
+    }
+
+    // --- Review round 5 -------------------------------------------------------------------------------
+
+    @Test(timeout = 30000)
+    public void anInstanceStartingWhileTheOldOneDrainsStandsInInsteadOfShippingAlongside() throws Exception {
+        responseDelayMs = 250;
+        RamsoftAsyncHttpAppender old = newAppender(url, NEVER, 10, 1_000_000, 10_000);
+        old.finalFlushBudgetMs = 8_000;
+        for (int i = 0; i < 60; i++) {
+            old.append(event("old " + i, "main"));
+        }
+        Thread stopper = new Thread(() -> old.stop(10, TimeUnit.SECONDS));
+        stopper.start();
+        Thread.sleep(200); // the old instance is now draining its backlog
+
+        RamsoftAsyncHttpAppender successor = newAppender(url, NEVER, 10, 1_000_000, 10_000);
+        assertTrue("an instance starting during the drain must stand in for it", successor.isStandIn());
+        for (int i = 0; i < 20; i++) {
+            successor.append(event("during drain " + i, "main"));
+        }
+        stopper.join();
+        successor.append(event("after drain", "main"));
+        successor.flush();
+
+        assertEquals("only one instance may send at a time", 1, maxInFlight.get());
+        assertFalse("after the drain the stand-in ships itself", successor.isStandIn());
+        assertEquals(81, entriesFromLogger("transformer").size());
+    }
+
+    @Test(timeout = 20000)
+    public void anEarlyFlushThatNoLongerFindsAFullBatchLeavesThePartialOneForTheInterval() throws Exception {
+        responseDelayMs = 400;
+        arrivedLatch = new CountDownLatch(1);
+        RamsoftAsyncHttpAppender appender = newAppender(url, NEVER, 10, 1_000_000, 10_000);
+        for (int i = 0; i < 10; i++) {
+            appender.append(event("first " + i, "main")); // early flush #1 starts; its request is slow
+        }
+        assertTrue(arrivedLatch.await(5, TimeUnit.SECONDS));
+        for (int i = 0; i < 13; i++) {
+            appender.append(event("next " + i, "main")); // queues early flush #2 while #1 is in flight
+        }
+        Thread.sleep(1_500);
+        // #1 sends both full batches; #2 then finds only 3 events and leaves them for the interval.
+        assertEquals("no request for a partial batch before the interval", 2, bodies.size());
+    }
+
+    @Test(timeout = 20000)
+    public void aFullQueueDropsBeforeRenderingSoTheChannelThreadPaysNothing() throws Exception {
+        server.stop(0);
+        CountingLayout layout = new CountingLayout();
+        RamsoftAsyncHttpAppender appender = new RamsoftAsyncHttpAppender("RamsoftHttp", null, layout, false,
+                "http://127.0.0.1:1/LogReceiver", "k", (int) NEVER, 1_000_000, 1_000_000, 50, 16_000_000);
+        appenders.add(appender);
+        appender.start();
+        for (int i = 0; i < 1_000; i++) {
+            appender.append(event("line " + i, "main"));
+        }
+        assertEquals("only the events that fit are rendered and redacted", 50, layout.renders.get());
+        assertTrue(appender.getStats(), appender.getStats().contains("queued=50"));
+    }
+
+    /** Counts renders; a minimal valid JSON layout. */
+    private static final class CountingLayout extends AbstractStringLayout {
+        final AtomicInteger renders = new AtomicInteger();
+
+        CountingLayout() {
+            super(StandardCharsets.UTF_8);
+        }
+
+        @Override
+        public String toSerializable(LogEvent event) {
+            renders.incrementAndGet();
+            return "{\"message\":\"" + RamsoftAsyncHttpAppender.jsonEscape(event.getMessage().getFormattedMessage()) + "\"}";
+        }
     }
 
     // --- Credentials never leave the box ------------------------------------------------------------

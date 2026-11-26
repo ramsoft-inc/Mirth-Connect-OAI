@@ -24,19 +24,29 @@ final class LogRedactor {
     private static final Pattern JWT = Pattern.compile(
             "(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_.-]*");
 
-    /** JSON members that hold a credential, plain or escaped inside a message: {@code "access_token":"…"}. */
-    private static final Pattern MEMBER = Pattern.compile(
-            "(?i)(\\\\?\"(?:ocp-apim-subscription-key|subscription-key|subscriptionkey|client_secret|clientsecret"
-                    + "|access_token|refresh_token|id_token|password|authorization)\\\\?\"\\s*:\\s*\\\\?\")"
-                    + "(?:[^\"\\\\]|\\\\(?!\"))+");
+    /**
+     * Name endings that mark a credential: {@code ClientSecret}, {@code aesKey}, {@code access_token},
+     * {@code Ocp-Apim-Subscription-Key}, {@code password}... A name must END with one, so
+     * {@code Clientsecretkeyid} (an id) and {@code Clientsecretendtime} (a date) are kept.
+     */
+    private static final String SECRET_NAME = "[A-Za-z0-9_-]*?(?:secret|password|passwd|pwd|token|aes_?key|api_?key"
+            + "|access_?key|private_?key|shared_?key|signing_?key|subscription[-_]?key|connection_?string|authorization)";
 
     /**
-     * Parameters that hold a credential in a URL, form body or connection string. {@code code} only after
+     * JSON members with a credential name, plain or escaped inside a message: {@code "ClientSecret":"…"}.
+     * Values shorter than 4 characters are kept: they are settings such as {@code "…AssocToken": "1"}.
+     * The value repetition is possessive: a greedy repeated group recurses once per character and threw
+     * StackOverflowError on a ~1,700-character token (a normal B2C access token) on the channel thread.
+     */
+    private static final Pattern MEMBER = Pattern.compile(
+            "(?i)(\\\\?\"" + SECRET_NAME + "\\\\?\"\\s*:\\s*\\\\?\")(?:[^\"\\\\]|\\\\(?!\")){4,}+");
+
+    /**
+     * Parameters with a credential name in a URL, form body or connection string. {@code code} only after
      * {@code ?} or {@code &} (Azure Function keys), so text like {@code statusCode=200} is kept.
      */
     private static final Pattern PARAM = Pattern.compile(
-            "(?i)((?:(?<![A-Za-z0-9_-])(?:subscription-key|subscription_key|client_secret|access_token|refresh_token"
-                    + "|id_token|password|pwd|sig)|[?&]code)=)[^&;\\s\"'\\\\<>]+");
+            "(?i)((?:(?<![A-Za-z0-9_-])(?:" + SECRET_NAME + "|sig)|[?&]code)=)[^&;\\s\"'\\\\<>]+");
 
     /** {@code Authorization: Basic …} / {@code Bearer …} written as text rather than as a JSON member. */
     private static final Pattern AUTH_HEADER = Pattern.compile(
@@ -58,8 +68,17 @@ final class LogRedactor {
         return out;
     }
 
+    /** One pass: continues from the first match instead of scanning again with replaceAll(). */
     private static String replace(Pattern pattern, String input, String replacement) {
         Matcher m = pattern.matcher(input);
-        return m.find() ? m.replaceAll(replacement) : input;
+        if (!m.find()) {
+            return input;
+        }
+        StringBuffer out = new StringBuffer(input.length());
+        do {
+            m.appendReplacement(out, replacement);
+        } while (m.find());
+        m.appendTail(out);
+        return out.toString();
     }
 }

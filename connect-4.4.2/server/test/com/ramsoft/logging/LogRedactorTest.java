@@ -21,7 +21,7 @@ public class LogRedactorTest {
 
     @Test
     public void aJwtIsMaskedWhereverItAppears() {
-        assertEquals("token=" + LogRedactor.JWT_MASK, LogRedactor.redact("token=" + JWT));
+        assertEquals("jwt: " + LogRedactor.JWT_MASK, LogRedactor.redact("jwt: " + JWT));
         assertEquals("[" + LogRedactor.JWT_MASK + "]", LogRedactor.redact("[" + JWT + "]"));
         // An unsigned JWT ("alg":"none") ends with a dot and an empty signature.
         String unsigned = "eyJhbGciOiJub25lIn0" + "." + "eyJzdWIiOiIxMjM0NSJ9" + ".";
@@ -57,6 +57,73 @@ public class LogRedactorTest {
         assertEquals("headers {\\\"Ocp-Apim-Subscription-Key\\\":\\\"<redacted>\\\",\\\"Accept\\\":\\\"json\\\"}",
                 LogRedactor.redact("headers {\\\"Ocp-Apim-Subscription-Key\\\":\\\"" + KEY + "\\\",\\\"Accept\\\":\\\"json\\\"}"));
         assertEquals("{\\\"password\\\" : \\\"<redacted>\\\"}", LogRedactor.redact("{\\\"password\\\" : \\\"hunter2\\\"}"));
+    }
+
+    @Test
+    public void theDeviceConfigResponseKeepsItsSettingsButLosesItsSecrets() {
+        // The shape COMMON_UTIL_CallAPIGET_nonResource logs for /fhir/Device/Config, escaped inside a message.
+        String message = "Response = {\\n  \\\"ClientID\\\": \\\"7e2e445a-28e0-4dc9-a48a-863d429a4ee0\\\",\\n"
+                + "  \\\"ClientSecret\\\": \\\"Abc8Q~" + "exampleSecretValue_123\\\",\\n"
+                + "  \\\"Clientsecretkeyid\\\": \\\"739965a2-e0df-4839-8b4a-7e011b1d3d00\\\",\\n"
+                + "  \\\"Clientsecretendtime\\\": \\\"7/9/2028 4:59:41 PM\\\",\\n"
+                + "  \\\"EventReportOnSameAssocToken\\\": \\\"1\\\",\\n"
+                + "  \\\"cacheWebServer\\\": {\\n    \\\"aesKey\\\": \\\"QmFzZTY0" + "RXhhbXBsZUFlc0tleVZhbHVlMTIzNDU2Nzg=\\\"\\n  }\\n}";
+        String out = LogRedactor.redact(message);
+        assertTrue(out, out.contains("\\\"ClientSecret\\\": \\\"<redacted>\\\""));
+        assertTrue(out, out.contains("\\\"aesKey\\\": \\\"<redacted>\\\""));
+        assertTrue("an id is not a secret", out.contains("\\\"Clientsecretkeyid\\\": \\\"739965a2-e0df-4839-8b4a-7e011b1d3d00\\\""));
+        assertTrue("a date is not a secret", out.contains("\\\"Clientsecretendtime\\\": \\\"7/9/2028 4:59:41 PM\\\""));
+        assertTrue("a one-character setting is not a secret", out.contains("\\\"EventReportOnSameAssocToken\\\": \\\"1\\\""));
+        assertTrue(out, out.contains("7e2e445a-28e0-4dc9-a48a-863d429a4ee0"));
+        assertFalse(out, out.contains("exampleSecretValue"));
+        assertFalse(out, out.contains("QmFzZTY0"));
+    }
+
+    @Test
+    public void secretNamedParametersAreMaskedByTheirNameEnding() {
+        assertEquals("u?pageToken=<redacted>&size=10", LogRedactor.redact("u?pageToken=abcdef123456&size=10"));
+        assertEquals("cfg apiKey=<redacted> aesKey=<redacted>", LogRedactor.redact("cfg apiKey=k-123456 aesKey=Zm9vYmFy"));
+        assertEquals("tokenizer=on", LogRedactor.redact("tokenizer=on"));
+    }
+
+    @Test(timeout = 20000)
+    public void veryLongCredentialValuesAreMaskedWithoutOverflowingASmallStack() throws Exception {
+        // B2C tokens and Authorization values are commonly 1,500-2,500 characters; a greedy repeated group
+        // overflowed at ~1,720 on a 1 MB stack. 100,000 on a 256 KB stack leaves no doubt.
+        StringBuilder sb = new StringBuilder(100_000);
+        for (int i = 0; i < 100_000; i++) {
+            sb.append((char) ('a' + i % 26));
+        }
+        final String big = sb.toString();
+        final String bigJwt = "eyJhbGciOiJSUzI1NiJ9" + "." + big + "." + "c2lnbmF0dXJl";
+        final String[] inputs = {
+            "{\\\"access_token\\\":\\\"" + big + "\\\"}",
+            "{\"Authorization\":\"Bearer " + big + "\"}",
+            "GET /x?subscription-key=" + big + "&a=1",
+            "Authorization: Basic " + big,
+            "jwt " + bigJwt,
+        };
+        final String[] outputs = new String[inputs.length];
+        final Throwable[] failure = new Throwable[1];
+        Thread t = new Thread(null, () -> {
+            try {
+                for (int i = 0; i < inputs.length; i++) {
+                    outputs[i] = LogRedactor.redact(inputs[i]);
+                }
+            } catch (Throwable e) {
+                failure[0] = e;
+            }
+        }, "small-stack", 256 * 1024);
+        t.start();
+        t.join();
+        if (failure[0] != null) {
+            throw new AssertionError("redaction failed on a long value: " + failure[0], failure[0]);
+        }
+        assertEquals("{\\\"access_token\\\":\\\"<redacted>\\\"}", outputs[0]);
+        assertEquals("{\"Authorization\":\"<redacted>\"}", outputs[1]);
+        assertEquals("GET /x?subscription-key=<redacted>&a=1", outputs[2]);
+        assertEquals("Authorization: Basic <redacted>", outputs[3]);
+        assertEquals("jwt " + LogRedactor.JWT_MASK, outputs[4]);
     }
 
     @Test

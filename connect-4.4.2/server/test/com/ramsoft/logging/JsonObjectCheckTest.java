@@ -39,6 +39,8 @@ public class JsonObjectCheckTest {
         "{\"a\":\"bad \\x escape\"}",
         "{\"a\":\"short \\u12\"}",
         "{\"a\":\"\\u12g4\"}",
+        "{\"a\":\"\\u\uff26\uff26\uff26\uff26\"}",  // full-width F: a Unicode digit, not JSON hex
+        "{\"a\":\"\\u\u0661\u0662\u0663\u0664\"}",  // Arabic-Indic digits
         "{\"a\":01}",
         "{\"a\":1.}",
         "{\"a\":.5}",
