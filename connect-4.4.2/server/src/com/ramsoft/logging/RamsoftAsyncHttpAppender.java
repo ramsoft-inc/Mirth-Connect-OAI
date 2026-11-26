@@ -828,32 +828,46 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
         if (executor != null) {
             executor.shutdown();
         }
+        boolean interrupted = false;
+        boolean locked = false;
         try {
-            boolean locked = flushLock.tryLock(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
-            if (!locked) {
-                // A regular flush is still waiting on a response. Cancel it, so no request of this
-                // instance is open when the one taking over starts sending.
-                cancelSends = true;
-                Call call = inFlight;
-                if (call != null) {
-                    call.cancel();
-                }
-                locked = flushLock.tryLock(CANCEL_GRACE_MS, TimeUnit.MILLISECONDS);
-            }
-            if (locked) {
-                try {
-                    flushLocked(true, deadline);
-                } finally {
-                    flushLock.unlock();
-                }
-            }
+            locked = flushLock.tryLock(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
         } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        } catch (Throwable t) {
-            StatusLogger.getLogger().error("RamsoftAppender final flush failed", t);
+            interrupted = true; // the caller wants out: no drain, but the hand-over still waits for the request
+        }
+        if (!locked) {
+            // A regular flush is still waiting on a response. Cancel it, so no request of this
+            // instance is open when the one taking over starts sending.
+            cancelSends = true;
+            Call call = inFlight;
+            if (call != null) {
+                call.cancel();
+            }
+            long graceEnd = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(CANCEL_GRACE_MS);
+            while (!locked && System.nanoTime() - graceEnd < 0) {
+                try {
+                    locked = flushLock.tryLock(graceEnd - System.nanoTime(), TimeUnit.NANOSECONDS);
+                } catch (InterruptedException e) {
+                    interrupted = true; // keep waiting out the grace: a cancelled request ends promptly
+                }
+            }
+        }
+        if (locked) {
+            try {
+                if (!interrupted) {
+                    flushLocked(true, deadline);
+                }
+            } catch (Throwable t) {
+                StatusLogger.getLogger().error("RamsoftAppender final flush failed", t);
+            } finally {
+                flushLock.unlock();
+            }
         }
         if (executor != null) {
             executor.shutdownNow();
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
         }
     }
 

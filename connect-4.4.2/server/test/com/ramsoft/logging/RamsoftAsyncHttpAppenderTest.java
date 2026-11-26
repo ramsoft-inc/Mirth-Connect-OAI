@@ -20,6 +20,7 @@ import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.logging.log4j.Level;
@@ -977,6 +978,37 @@ public class RamsoftAsyncHttpAppenderTest {
         // The stand-in has rendered nothing yet; its report carries the identity it inherited.
         assertEquals("unit-test", reports.get(0).get("key").getAsString());
         assertEquals("MirthConnectService", reports.get(0).get("service").getAsString());
+    }
+
+    @Test(timeout = 30000)
+    public void anInterruptedStopStillCancelsTheOpenRequestBeforeTheStandInTakesOver() throws Exception {
+        responseDelayMs = 5_000;
+        arrivedLatch = new CountDownLatch(1);
+        final RamsoftAsyncHttpAppender old = newAppender(url, NEVER, 10, 1_000_000, 10_000);
+        old.finalFlushBudgetMs = 10_000;
+        RamsoftAsyncHttpAppender standIn = newAppender("", "", NEVER, 10, 1_000_000, 10_000, 16_000_000);
+        for (int i = 0; i < 9; i++) {
+            old.append(event("in flight " + i, "main"));
+        }
+        assertTrue(arrivedLatch.await(5, TimeUnit.SECONDS));
+
+        final AtomicBoolean stillInterrupted = new AtomicBoolean();
+        Thread stopper = new Thread(() -> {
+            old.stop(0, TimeUnit.MILLISECONDS);
+            stillInterrupted.set(Thread.currentThread().isInterrupted());
+        });
+        stopper.start();
+        Thread.sleep(300); // the stopper is now waiting for the flush lock
+        stopper.interrupt();
+        stopper.join(5_000);
+        assertFalse("an interrupt must cut the stop short, not wait for the budget", stopper.isAlive());
+        assertTrue("the interrupt is preserved for the caller", stillInterrupted.get());
+
+        responseDelayMs = 0;
+        standIn.flush();
+        List<JsonObject> reports = entriesFromLogger(RamsoftAsyncHttpAppender.DROP_REPORT_LOGGER);
+        assertEquals("the open request must have ended before the stand-in took over", 1, reports.size());
+        assertTrue(reports.get(0).get("message").getAsString().contains("send failed: 9"));
     }
 
     @Test(timeout = 20000)
