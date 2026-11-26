@@ -41,9 +41,11 @@ import java.util.regex.Pattern;
  * body (it is what the OmegaAI Link's Serilog HTTP sink sends).
  *
  * <p>Failure behaviour is deliberately lossy: the appender never blocks a channel thread, keeps at
- * most one request in flight, and drops a batch it could not deliver rather than retrying it, so a
- * slow or failing gateway sees less traffic from Mirth, not more. Drops are counted and reported
- * in the next delivered batch as a WARN event from logger {@code RamsoftHttpAppender}.
+ * most one request in flight, and drops a batch it could not deliver rather than retrying it. After
+ * a failed send it stops early (size-triggered) flushes and sends at most one batch per interval
+ * until a send succeeds again, so a slow or failing gateway sees less traffic from Mirth, not more.
+ * Drops are counted and reported in the next delivered batch as a WARN event from logger
+ * {@code RamsoftHttpAppender}.
  *
  * <p>The class name, both original constructors and {@link #updateEndpointAndPattern} are unchanged
  * so the existing Global Scripts registration and the "Check Mirth Health" deploy script keep working.
@@ -58,6 +60,9 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
     private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
     private static final Pattern THREAD_PATTERN = Pattern.compile(".* on ([^()]+) \\([0-9a-f\\-]{36}\\), ([^()]+) \\(");
     static final String DROP_REPORT_LOGGER = "RamsoftHttpAppender";
+    /** Upper bound on the final flush in {@link #stop}, so a down gateway cannot hold up a Mirth shutdown. */
+    static final long FINAL_FLUSH_BUDGET_MS = 10_000;
+    private static final long NO_DEADLINE = Long.MIN_VALUE;
 
     private final OkHttpClient httpClient;
     private volatile String url;
@@ -69,6 +74,7 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
     private final BlockingQueue<String> queue;
     private final ScheduledExecutorService flusher;
     private final AtomicBoolean flushRequested = new AtomicBoolean(false);
+    private volatile boolean lastSendFailed;
     private final AtomicLong droppedQueueFull = new AtomicLong();
     private final AtomicLong droppedSendFailed = new AtomicLong();
     private final AtomicLong batchesSent = new AtomicLong();
@@ -76,7 +82,8 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
     private final int maxBatchEvents;
     private final int maxBatchChars;
 
-    // Only touched by the flusher thread (and by stop() after the flusher has terminated).
+    // Guarded by flushLock: the flusher thread, stop() and tests may all call flush().
+    private final Object flushLock = new Object();
     private String carryOver;
 
     public RamsoftAsyncHttpAppender(String name, Filter filter, Layout<? extends Serializable> layout,
@@ -189,6 +196,10 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
     }
 
     private void requestFlush() {
+        if (lastSendFailed) {
+            // Backing off: only the scheduled flush may contact a failing gateway (one request per interval).
+            return;
+        }
         if (flushRequested.compareAndSet(false, true)) {
             try {
                 flusher.execute(this::flushSafely);
@@ -211,15 +222,41 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
 
     /** Sends everything currently queued, one batch (one request) at a time. */
     void flush() {
-        while (true) {
-            List<String> batch = takeBatch();
-            if (batch.isEmpty()) {
-                return;
-            }
-            addDropReport(batch);
-            send(batch);
-            if (carryOver == null && queue.isEmpty()) {
-                return;
+        flush(NO_DEADLINE);
+    }
+
+    /**
+     * Sends queued batches until the queue is empty, a send fails, or {@code deadlineNanos}
+     * ({@link System#nanoTime()} based) passes. Stopping at the first failure means a failing gateway
+     * gets at most one request per flush interval from this instance; what is still queued waits for
+     * the next interval (or is dropped as "queue full" if the outage outlasts the queue).
+     */
+    private void flush(long deadlineNanos) {
+        synchronized (flushLock) {
+            while (true) {
+                List<String> batch = takeBatch();
+                if (batch.isEmpty()) {
+                    return;
+                }
+                int events = batch.size();
+                long full = droppedQueueFull.getAndSet(0);
+                long failed = droppedSendFailed.getAndSet(0);
+                addDropReport(batch, full, failed);
+                if (send(batch)) {
+                    lastSendFailed = false;
+                    batchesSent.incrementAndGet();
+                    eventsSent.addAndGet(events);
+                } else {
+                    lastSendFailed = true;
+                    // The report went down with the batch: put its counts back so the next one is complete.
+                    droppedQueueFull.addAndGet(full);
+                    droppedSendFailed.addAndGet(failed + events);
+                    return;
+                }
+                if ((carryOver == null && queue.isEmpty())
+                        || (deadlineNanos != NO_DEADLINE && System.nanoTime() - deadlineNanos > 0)) {
+                    return;
+                }
             }
         }
     }
@@ -248,9 +285,7 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
         return batch;
     }
 
-    private void addDropReport(List<String> batch) {
-        long full = droppedQueueFull.getAndSet(0);
-        long failed = droppedSendFailed.getAndSet(0);
+    private void addDropReport(List<String> batch, long full, long failed) {
         if (full == 0 && failed == 0) {
             return;
         }
@@ -269,11 +304,12 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
         }
     }
 
-    private void send(List<String> batch) {
+    /** POSTs one batch; true only on a 2xx. Never retried. */
+    private boolean send(List<String> batch) {
         String target = url;
         String key = subscriptionKey;
         if (target == null || target.isEmpty()) {
-            return;
+            return false;
         }
         StringBuilder body = new StringBuilder(2 + batch.size() * 256);
         body.append('[');
@@ -288,8 +324,7 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
         try {
             HttpUrl parsed = HttpUrl.parse(target);
             if (parsed == null) {
-                droppedSendFailed.addAndGet(batch.size());
-                return;
+                return false;
             }
             HttpUrl.Builder httpUrlBuilder = parsed.newBuilder();
             if (key != null && !key.isEmpty()) {
@@ -300,15 +335,10 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
                     .post(RequestBody.create(JSON, body.toString()))
                     .build();
             try (Response response = httpClient.newCall(request).execute()) {
-                if (response.isSuccessful()) {
-                    batchesSent.incrementAndGet();
-                    eventsSent.addAndGet(batch.size());
-                } else {
-                    droppedSendFailed.addAndGet(batch.size());
-                }
+                return response.isSuccessful();
             }
         } catch (Exception e) {
-            droppedSendFailed.addAndGet(batch.size());
+            return false;
         }
     }
 
@@ -322,7 +352,7 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
             Thread.currentThread().interrupt();
         }
         try {
-            flush();
+            flush(System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(FINAL_FLUSH_BUDGET_MS));
         } catch (Throwable t) {
             StatusLogger.getLogger().error("RamsoftAppender final flush failed", t);
         }

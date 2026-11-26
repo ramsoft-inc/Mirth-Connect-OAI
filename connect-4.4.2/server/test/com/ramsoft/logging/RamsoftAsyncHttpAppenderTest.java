@@ -233,6 +233,67 @@ public class RamsoftAsyncHttpAppenderTest {
     }
 
     @Test(timeout = 20000)
+    public void consecutiveFailedBatchesAreAllCountedInTheNextDeliveredReport() throws Exception {
+        statusToReturn.set(503);
+        appender = newAppender(url, 600_000, 500, 1_000_000, 10_000);
+        for (int i = 0; i < 7; i++) {
+            appender.append(event("lost " + i, "main"));
+        }
+        appender.flush();
+        appender.append(event("also lost", "main"));
+        appender.flush(); // carries the first report, and fails too
+
+        statusToReturn.set(200);
+        appender.append(event("after recovery", "main"));
+        appender.flush();
+
+        assertEquals(3, bodies.size());
+        JsonArray third = new JsonParser().parse(bodies.get(2)).getAsJsonArray();
+        assertEquals(2, third.size());
+        String report = third.get(1).getAsJsonObject().get("message").getAsString();
+        assertTrue(report, report.contains("dropped 8 "));
+        assertTrue(report, report.contains("send failed: 8"));
+        assertTrue(appender.getStats(), appender.getStats().contains("droppedPending=0"));
+    }
+
+    @Test(timeout = 20000)
+    public void afterAFailedSendTheGatewayGetsOneRequestPerFlushNotOnePerQueuedBatch() throws Exception {
+        statusToReturn.set(503);
+        requestLatch = new CountDownLatch(1);
+        appender = newAppender(url, 600_000, 10, 1_000_000, 10_000);
+
+        for (int i = 0; i < 10; i++) {
+            appender.append(event("line " + i, "main")); // the 10th triggers an early flush, which fails
+        }
+        assertTrue(requestLatch.await(10, TimeUnit.SECONDS));
+        Thread.sleep(200);
+
+        for (int i = 0; i < 100; i++) {
+            appender.append(event("more " + i, "main")); // ten more full batches: no early flush while failing
+        }
+        Thread.sleep(500);
+        assertEquals("no early flush may fire while the gateway is failing", 1, bodies.size());
+
+        appender.flush();
+        assertEquals("a flush stops at the first failed batch instead of trying all ten", 2, bodies.size());
+    }
+
+    @Test(timeout = 20000)
+    public void stopGivesUpAtTheFirstFailedBatchSoShutdownIsNotHeldUp() throws Exception {
+        statusToReturn.set(503);
+        appender = newAppender(url, 600_000, 10, 1_000_000, 10_000);
+        appender.append(event("first", "main"));
+        appender.flush(); // now failing: size-triggered flushes are off
+        for (int i = 0; i < 50; i++) {
+            appender.append(event("pending " + i, "main"));
+        }
+
+        appender.stop(5, TimeUnit.SECONDS);
+        assertTrue(appender.isStopped());
+        assertEquals("one attempt at the final flush, not one per queued batch", 2, bodies.size());
+    }
+
+    @Test(timeout = 20000)
     public void aFullQueueDropsInsteadOfBlockingTheCaller() throws Exception {
         // Unreachable endpoint (closed port) and no early flush can drain it: the queue must fill.
         server.stop(0);
