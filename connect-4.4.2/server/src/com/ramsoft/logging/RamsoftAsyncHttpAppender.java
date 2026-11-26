@@ -273,7 +273,9 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
     }
 
     // ✅ Allow layout + endpoint update after deploy
-    public synchronized void updateEndpointAndPattern(String url, String subscriptionKey, Layout<? extends Serializable> layout) {
+    public void updateEndpointAndPattern(String url, String subscriptionKey, Layout<? extends Serializable> layout) {
+        // No monitor held while forwarding: a stand-in forwards to its owner and, after a hand-over, the old
+        // owner forwards to the stand-in, so nested monitors could deadlock. Each field is one volatile write.
         this.endpoint = new Endpoint(url, subscriptionKey);
         this.dynamicLayout = layout;
         RamsoftAsyncHttpAppender running = liveRunningInstance();
@@ -365,7 +367,27 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
             if (!ignoreExceptions()) {
                 StatusLogger.getLogger().error("RamsoftAppender exception", e);
             }
+        } finally {
+            if (retired) {
+                // A drop counted here after stop() moved this instance's counts would never be reported.
+                moveDropCountsTo(successor);
+            }
         }
+    }
+
+    /**
+     * Moves the unreported drop counts to {@code next} (or discards them when null). Each count is taken
+     * with getAndSet, so one counted concurrently with stop()'s own move is moved exactly once.
+     */
+    private long moveDropCountsTo(RamsoftAsyncHttpAppender next) {
+        long full = droppedQueueFull.getAndSet(0);
+        long failed = droppedSendFailed.getAndSet(0);
+        long noEndpoint = droppedNoEndpoint.getAndSet(0);
+        long renderFailed = droppedRenderFailed.getAndSet(0);
+        if (next != null) {
+            next.restoreDropCounts(full, failed, noEndpoint, renderFailed);
+        }
+        return full + failed + noEndpoint + renderFailed;
     }
 
     /** Queues a rendered entry, or drops and counts it when the queue is full. */
@@ -837,26 +859,38 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
 
     /**
      * Under CLAIM_LOCK, after the final flush: the newest live stand-in becomes the shipping instance
-     * and receives the unsent entries and unreported drop counts. Without one, they are written to the
-     * status logger, the only place left to report them.
+     * and receives the unsent entries and unreported drop counts. The other live stand-ins now stand in
+     * for it, so a later stop of the successor can hand over again. Without a stand-in, what is left is
+     * written to the status logger, the only place left to report it.
+     *
+     * <p>The backlog is installed before the successor claims the name: until then its own appends wait
+     * on CLAIM_LOCK (it still stands in for this stopped instance), so newer events cannot overtake the
+     * backlog or fill the queue ahead of it.
      */
     private void handOverLocked() {
         RamsoftAsyncHttpAppender next = null;
-        for (int i = standIns.size() - 1; i >= 0 && next == null; i--) {
+        List<RamsoftAsyncHttpAppender> others = new ArrayList<>();
+        for (int i = standIns.size() - 1; i >= 0; i--) {
             RamsoftAsyncHttpAppender s = standIns.get(i);
             if (s.runningInstance == this && !s.stopRequested && !s.isStopping() && !s.isStopped()) {
-                next = s;
+                if (next == null) {
+                    next = s;
+                } else {
+                    others.add(0, s); // keeps oldest first
+                }
             }
         }
         standIns.clear();
         if (next != null) {
-            next.claimLocked(); // this instance has left RUNNING, so it ships from now on
             if (!next.endpoint.isSet()) {
                 next.endpoint = endpoint; // "Check Mirth Health" has not reached it yet
             }
+            if (next.identity == null) {
+                next.identity = identity; // for its drop reports and rebuilt events until its first render
+            }
         }
         successor = next;
-        retired = true;
+        retired = true; // from here a late admit on this instance goes to next
 
         List<Entry> left = new ArrayList<>();
         if (flushLock.tryLock()) { // not held unless a cancelled request outlived the grace period
@@ -874,18 +908,24 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
             release(e);
             left.add(e);
         }
-        long full = droppedQueueFull.getAndSet(0);
-        long failed = droppedSendFailed.getAndSet(0);
-        long noEndpoint = droppedNoEndpoint.getAndSet(0);
-        long renderFailed = droppedRenderFailed.getAndSet(0);
-        if (next != null) {
-            next.restoreDropCounts(full, failed, noEndpoint, renderFailed);
-            for (Entry entry : left) {
-                next.admit(entry);
+        long drops = moveDropCountsTo(next);
+        if (next == null) {
+            if (!left.isEmpty() || drops > 0) {
+                StatusLogger.getLogger().warn("RamsoftHttpAppender stopped with {} log events unsent and {} drops"
+                        + " unreported; no instance took over", left.size(), drops);
             }
-        } else if (!left.isEmpty() || full + failed + noEndpoint + renderFailed > 0) {
-            StatusLogger.getLogger().warn("RamsoftHttpAppender stopped with {} log events unsent and {} drops unreported;"
-                    + " no instance took over", left.size(), full + failed + noEndpoint + renderFailed);
+            return;
+        }
+        for (Entry entry : left) {
+            next.admit(entry);
+        }
+        next.claimLocked(); // this instance has left RUNNING, so next ships from now on
+        for (RamsoftAsyncHttpAppender s : others) {
+            s.runningInstance = next;
+            next.standIns.add(s);
+        }
+        if (next.fullBatchWaiting()) {
+            next.requestFlush(); // admitted before its flusher existed
         }
     }
 

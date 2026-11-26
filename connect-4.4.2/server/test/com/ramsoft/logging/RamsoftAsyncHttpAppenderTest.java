@@ -967,14 +967,102 @@ public class RamsoftAsyncHttpAppenderTest {
         assertTrue("stop took " + elapsedMs + " ms", elapsedMs < 2_500);
 
         responseDelayMs = 0;
-        standIn.append(event("after the takeover", "main"));
-        standIn.flush();
+        standIn.flush(); // nothing of its own yet: the report goes out alone
         // The cancelled batch is counted by the old instance when its request ends; the stand-in
         // reporting it proves that request had ended before the stand-in started sending.
         List<JsonObject> reports = entriesFromLogger(RamsoftAsyncHttpAppender.DROP_REPORT_LOGGER);
         assertEquals(1, reports.size());
         String report = reports.get(0).get("message").getAsString();
         assertTrue(report, report.contains("send failed: 9"));
+        // The stand-in has rendered nothing yet; its report carries the identity it inherited.
+        assertEquals("unit-test", reports.get(0).get("key").getAsString());
+        assertEquals("MirthConnectService", reports.get(0).get("service").getAsString());
+    }
+
+    @Test(timeout = 20000)
+    public void aRenderFailureCountedAfterTheHandOverIsReportedByTheStandIn() throws Exception {
+        final CountDownLatch rendering = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+        Layout<? extends Serializable> failing = new AbstractStringLayout(StandardCharsets.UTF_8) {
+            @Override
+            public String toSerializable(LogEvent event) {
+                rendering.countDown();
+                try {
+                    release.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                throw new IllegalStateException("layout bug");
+            }
+        };
+        RamsoftAsyncHttpAppender old = new RamsoftAsyncHttpAppender("RamsoftHttp", null, failing, true, url, "k",
+                (int) NEVER, 500, 1_000_000, 10_000, 16_000_000);
+        appenders.add(old);
+        old.start();
+        final RamsoftAsyncHttpAppender standIn = newAppender("", "", NEVER, 500, 1_000_000, 10_000, 16_000_000);
+        Thread channel = new Thread(() -> standIn.append(event("cannot be rendered", "main"))); // forwarded to old
+        channel.start();
+        assertTrue(rendering.await(5, TimeUnit.SECONDS));
+
+        old.stop(5, TimeUnit.SECONDS); // moves old's counts (none yet) to the stand-in
+        release.countDown(); // now the render fails and old counts it
+        channel.join(5_000);
+        standIn.flush();
+
+        List<JsonObject> reports = entriesFromLogger(RamsoftAsyncHttpAppender.DROP_REPORT_LOGGER);
+        assertEquals(1, reports.size());
+        String report = reports.get(0).get("message").getAsString();
+        assertTrue(report, report.contains("render failed: 1"));
+    }
+
+    @Test(timeout = 20000)
+    public void afterTwoStopsTheLastStandInShipsWithoutWaitingForAnEvent() throws Exception {
+        RamsoftAsyncHttpAppender first = newAppender(url, NEVER, 500, 1_000_000, 10_000);
+        RamsoftAsyncHttpAppender older = newAppender("", "", NEVER, 500, 1_000_000, 10_000, 16_000_000);
+        RamsoftAsyncHttpAppender newest = newAppender("", "", NEVER, 500, 1_000_000, 10_000, 16_000_000);
+        first.stop(5, TimeUnit.SECONDS);
+        assertTrue("re-registered with the instance that took over", older.isStandIn());
+
+        newest.append(event("queued by the second shipper", "main"));
+        newest.stop(5, TimeUnit.SECONDS);
+        // The older stand-in has neither appended nor been updated since: it was registered for the hand-over.
+        assertFalse(older.isStandIn());
+        older.flush();
+        assertEquals(1, entriesFromLogger("transformer").size());
+    }
+
+    @Test(timeout = 20000)
+    public void aFullBatchHandedOverIsSentWithoutWaitingForTheInterval() throws Exception {
+        arrivedLatch = new CountDownLatch(1);
+        RamsoftAsyncHttpAppender old = newAppender("http://127.0.0.1:1/LogReceiver", NEVER, 10, 1_000_000, 10_000);
+        RamsoftAsyncHttpAppender standIn = newAppender(url, NEVER, 10, 1_000_000, 10_000);
+        assertTrue(standIn.isStandIn());
+        old.append(event("first", "main"));
+        old.flush(); // refused: old backs off, so nothing it queues now is sent early
+        for (int i = 0; i < 20; i++) {
+            old.append(event("pending " + i, "main"));
+        }
+        old.stop(5, TimeUnit.SECONDS); // one more refused batch, then more than a full batch is handed over
+
+        assertTrue("the successor must send a full inherited batch at once, not at its next interval",
+                arrivedLatch.await(5, TimeUnit.SECONDS));
+    }
+
+    @Test(timeout = 20000)
+    public void anUpdateNeverWaitsOnAnotherInstancesMonitor() throws Exception {
+        final RamsoftAsyncHttpAppender old = newAppender(url, NEVER, 500, 1_000_000, 10_000);
+        final RamsoftAsyncHttpAppender standIn = newAppender("", "", NEVER, 500, 1_000_000, 10_000, 16_000_000);
+        old.stop(5, TimeUnit.SECONDS); // old now forwards updates to standIn, the reverse of before
+        Thread update = new Thread(() -> old.updateEndpointAndPattern(url, "via-old", layout()));
+        // Held monitors were the deadlock: standIn -> old before the hand-over, old -> standIn after it.
+        synchronized (standIn) {
+            update.start();
+            update.join(3_000);
+            assertFalse("the update waited on another instance's monitor", update.isAlive());
+        }
+        standIn.append(event("x", "main"));
+        standIn.flush();
+        assertEquals("subscription-key=via-old", queries.get(0));
     }
 
     @Test(timeout = 20000)
