@@ -35,7 +35,8 @@ $testCp = $compileCp + @(
     'lib/signalr/gson-2.8.5.jar'
 ) | ForEach-Object { if ([IO.Path]::IsPathRooted($_)) { $_ } else { Join-Path $root $_ } }
 
-foreach ($jar in $testCp) { if (-not (Test-Path $jar)) { throw "Missing dependency: $jar" } }
+$required = if ($SkipTests) { $compileCp } else { $testCp }
+foreach ($jar in $required) { if (-not (Test-Path $jar)) { throw "Missing dependency: $jar" } }
 
 if (Test-Path $out) { Remove-Item -Recurse -Force $out }
 New-Item -ItemType Directory -Force $classes, $testClasses | Out-Null
