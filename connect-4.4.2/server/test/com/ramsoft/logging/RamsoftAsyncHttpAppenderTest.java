@@ -908,6 +908,158 @@ public class RamsoftAsyncHttpAppenderTest {
         assertFalse(second.isStandIn());
     }
 
+    // --- Review round 6: the hand-over at stop() -----------------------------------------------------
+
+    @Test(timeout = 30000)
+    public void whatTheStoppingInstanceCouldNotSendInTimeIsShippedByTheStandInThatTakesOver() throws Exception {
+        responseDelayMs = 300;
+        RamsoftAsyncHttpAppender old = newAppender(url, NEVER, 10, 1_000_000, 10_000);
+        old.finalFlushBudgetMs = 500;
+        RamsoftAsyncHttpAppender standIn = newAppender("", "", NEVER, 10, 1_000_000, 10_000, 16_000_000);
+        assertTrue(standIn.isStandIn());
+        for (int i = 0; i < 60; i++) {
+            old.append(event("old " + i, "main")); // 6 batches at 300 ms each: more than the budget allows
+        }
+        old.stop(10, TimeUnit.SECONDS);
+        int sentByOld = entriesFromLogger("transformer").size();
+        assertTrue("the budget must leave a backlog for this test: " + sentByOld, sentByOld < 60);
+
+        assertFalse("the stand-in takes over at once, not on its next event", standIn.isStandIn());
+        responseDelayMs = 0;
+        standIn.stop(10, TimeUnit.SECONDS);
+        assertEquals("nothing is stranded in the stopped instance", 60, entriesFromLogger("transformer").size());
+        assertEquals("only one instance may send at a time", 1, maxInFlight.get());
+    }
+
+    @Test(timeout = 20000)
+    public void dropCountsTheStoppingInstanceHadNotReportedAreReportedByTheStandIn() throws Exception {
+        RamsoftAsyncHttpAppender old = newAppender("", "", NEVER, 500, 1_000_000, 10_000, 16_000_000);
+        RamsoftAsyncHttpAppender standIn = newAppender("", "", NEVER, 500, 1_000_000, 10_000, 16_000_000);
+        for (int i = 0; i < 3; i++) {
+            old.append(event("before any endpoint " + i, "main"));
+        }
+        old.stop(5, TimeUnit.SECONDS);
+        standIn.updateEndpointAndPattern(url, "test-key", layout());
+        standIn.append(event("first delivered", "main"));
+        standIn.flush();
+
+        List<JsonObject> reports = entriesFromLogger(RamsoftAsyncHttpAppender.DROP_REPORT_LOGGER);
+        assertEquals(1, reports.size());
+        String report = reports.get(0).get("message").getAsString();
+        assertTrue(report, report.contains("no endpoint yet: 3"));
+    }
+
+    @Test(timeout = 30000)
+    public void aRequestStillOpenWhenTheBudgetRunsOutIsCancelledBeforeTheStandInTakesOver() throws Exception {
+        responseDelayMs = 5_000;
+        arrivedLatch = new CountDownLatch(1);
+        RamsoftAsyncHttpAppender old = newAppender(url, NEVER, 10, 1_000_000, 10_000);
+        old.finalFlushBudgetMs = 300;
+        RamsoftAsyncHttpAppender standIn = newAppender("", "", NEVER, 10, 1_000_000, 10_000, 16_000_000);
+        for (int i = 0; i < 9; i++) {
+            old.append(event("in flight " + i, "main")); // a full batch (one slot kept for a report): sent now
+        }
+        assertTrue(arrivedLatch.await(5, TimeUnit.SECONDS));
+
+        long start = System.nanoTime();
+        old.stop(0, TimeUnit.MILLISECONDS);
+        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+        assertTrue("stop took " + elapsedMs + " ms", elapsedMs < 2_500);
+
+        responseDelayMs = 0;
+        standIn.append(event("after the takeover", "main"));
+        standIn.flush();
+        // The cancelled batch is counted by the old instance when its request ends; the stand-in
+        // reporting it proves that request had ended before the stand-in started sending.
+        List<JsonObject> reports = entriesFromLogger(RamsoftAsyncHttpAppender.DROP_REPORT_LOGGER);
+        assertEquals(1, reports.size());
+        String report = reports.get(0).get("message").getAsString();
+        assertTrue(report, report.contains("send failed: 9"));
+    }
+
+    @Test(timeout = 20000)
+    public void anEventForwardedWhileTheOwnerHandsOverIsShippedByTheStandIn() throws Exception {
+        final CountDownLatch rendering = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+        Layout<? extends Serializable> blocking = new AbstractStringLayout(StandardCharsets.UTF_8) {
+            @Override
+            public String toSerializable(LogEvent event) {
+                String message = event.getMessage().getFormattedMessage();
+                if ("late".equals(message)) {
+                    rendering.countDown();
+                    try {
+                        release.await(10, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                return "{\"message\":\"" + RamsoftAsyncHttpAppender.jsonEscape(message) + "\"}";
+            }
+        };
+        RamsoftAsyncHttpAppender old = new RamsoftAsyncHttpAppender("RamsoftHttp", null, blocking, false, url, "k",
+                (int) NEVER, 500, 1_000_000, 10_000, 16_000_000);
+        appenders.add(old);
+        old.start();
+        final RamsoftAsyncHttpAppender standIn = newAppender("", "", NEVER, 500, 1_000_000, 10_000, 16_000_000);
+        Thread channel = new Thread(() -> standIn.append(event("late", "main"))); // forwarded to old
+        channel.start();
+        assertTrue(rendering.await(5, TimeUnit.SECONDS));
+
+        old.stop(5, TimeUnit.SECONDS); // its queue is empty, so the drain and the hand-over finish now
+        assertFalse(standIn.isStandIn());
+        release.countDown();
+        channel.join(5_000);
+        standIn.flush();
+
+        List<String> messages = new ArrayList<>();
+        for (JsonObject o : allEntries()) {
+            messages.add(o.get("message").getAsString());
+        }
+        assertEquals(Collections.singletonList("late"), messages);
+    }
+
+    @Test(timeout = 20000)
+    public void theNewestStandInTakesOverAndAnOlderOneStandsInForIt() throws Exception {
+        RamsoftAsyncHttpAppender old = newAppender(url, NEVER, 500, 1_000_000, 10_000);
+        // Two "Redeploy All"s: Global Scripts holds only the newest, which "Check Mirth Health" updates.
+        RamsoftAsyncHttpAppender older = newAppender("", "", NEVER, 500, 1_000_000, 10_000, 16_000_000);
+        RamsoftAsyncHttpAppender newest = newAppender("", "", NEVER, 500, 1_000_000, 10_000, 16_000_000);
+        old.stop(5, TimeUnit.SECONDS);
+
+        assertFalse("the newest stand-in ships", newest.isStandIn());
+        older.append(event("via the older one", "main"));
+        assertTrue("the older one stands in for the newest", older.isStandIn());
+        newest.flush();
+        assertEquals("via the older one", allEntries().get(0).get("message").getAsString());
+    }
+
+    @Test(timeout = 20000)
+    public void withNoStandInWhatIsLeftAtStopIsWrittenToTheStatusLogger() throws Exception {
+        StatusCapture capture = new StatusCapture();
+        StatusLogger.getLogger().registerListener(capture);
+        try {
+            statusToReturn.set(503);
+            RamsoftAsyncHttpAppender appender = newAppender(url, NEVER, 10, 1_000_000, 10_000);
+            appender.append(event("first", "main"));
+            appender.flush(); // fails: 1 drop not reported yet
+            for (int i = 0; i < 30; i++) {
+                appender.append(event("pending " + i, "main"));
+            }
+            appender.stop(5, TimeUnit.SECONDS); // one more failed batch (9 events + the report), then it gives up
+
+            List<String> warnings = new ArrayList<>();
+            for (String m : capture.messages(Level.WARN)) {
+                if (m.contains("unsent")) {
+                    warnings.add(m);
+                }
+            }
+            assertEquals(1, warnings.size());
+            assertTrue(warnings.get(0), warnings.get(0).contains("with 21 log events unsent and 10 drops unreported"));
+        } finally {
+            StatusLogger.getLogger().removeListener(capture);
+        }
+    }
+
     /** Counts renders; a minimal valid JSON layout. */
     private static final class CountingLayout extends AbstractStringLayout {
         final AtomicInteger renders = new AtomicInteger();

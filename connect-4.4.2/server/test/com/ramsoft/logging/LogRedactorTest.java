@@ -86,6 +86,30 @@ public class LogRedactorTest {
         assertEquals("tokenizer=on", LogRedactor.redact("tokenizer=on"));
     }
 
+    @Test
+    public void flagValuesOfSecretNamedFieldsStayReadable() {
+        String[] untouched = {
+            "{\"ResetPassword\":\"true\",\"HasToken\":\"FALSE\",\"apiKey\":\"null\"}",
+            "{\\\"ResetPassword\\\":\\\"true\\\"}",
+            "u?resetPassword=true&rememberToken=false",
+        };
+        for (String s : untouched) {
+            assertSame(s, s, LogRedactor.redact(s));
+        }
+        // Only the exact word: a value that merely starts with one is still masked.
+        assertEquals("{\"password\":\"<redacted>\"}", LogRedactor.redact("{\"password\":\"trueblue7\"}"));
+        assertEquals("u?password=<redacted>&a=1", LogRedactor.redact("u?password=nullable9&a=1"));
+    }
+
+    @Test
+    public void authorizationIsMaskedOnlyAsTheWholeHeaderName() {
+        String prior = "{\"priorAuthorization\":\"Required\",\"priorAuthorizationNumber\":\"PA-778812\"}";
+        assertSame(prior, LogRedactor.redact(prior));
+        assertEquals("{\"Authorization\":\"<redacted>\"}", LogRedactor.redact("{\"Authorization\":\"SharedKey acct:c2lnbmF0dXJl\"}"));
+        assertEquals("{\\\"Proxy-Authorization\\\":\\\"<redacted>\\\"}",
+                LogRedactor.redact("{\\\"Proxy-Authorization\\\":\\\"Negotiate YIIBhgYGKwYBBQUCoIIBejCCAXag\\\"}"));
+    }
+
     @Test(timeout = 20000)
     public void veryLongCredentialValuesAreMaskedWithoutOverflowingASmallStack() throws Exception {
         // B2C tokens and Authorization values are commonly 1,500-2,500 characters; a greedy repeated group

@@ -13,6 +13,7 @@ import org.apache.logging.log4j.message.Message;
 import org.apache.logging.log4j.message.SimpleMessage;
 import org.apache.logging.log4j.status.StatusLogger;
 
+import okhttp3.Call;
 import okhttp3.HttpUrl;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
@@ -74,7 +75,8 @@ import java.util.regex.Pattern;
  * that log4j never attaches ({@code addAppender} keeps the first). Only one started instance per
  * appender name ships logs; a later one becomes a stand-in that starts no thread and forwards
  * {@link #updateEndpointAndPattern} (and anything appended to it) to the running one, so endpoint
- * and key updates from "Check Mirth Health" still reach the appender that is attached.
+ * and key updates from "Check Mirth Health" still reach the appender that is attached. When the
+ * running one stops, the newest stand-in takes over with whatever it had not sent (see {@link #stop}).
  */
 public class RamsoftAsyncHttpAppender extends AbstractAppender {
 
@@ -90,6 +92,8 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
     static final int DEFAULT_MAX_QUEUE_CHARS = 16_000_000;
     /** Budget for the final flush in {@link #stop}, so a down or slow gateway cannot hold up a Mirth shutdown. */
     static final long DEFAULT_FINAL_FLUSH_BUDGET_MS = 10_000;
+    /** How long stop() waits for a cancelled request to end before handing over regardless. */
+    private static final long CANCEL_GRACE_MS = 1_000;
     static final String DROP_REPORT_LOGGER = "RamsoftHttpAppender";
     /** Key under {@code Properties} on an event the appender rebuilt because the layout output was not valid JSON. */
     static final String REBUILT_PROPERTY = "RamsoftAppender";
@@ -147,6 +151,15 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
     private volatile ScheduledExecutorService flusher;
     /** Set when another instance with this name was already shipping at start. */
     private volatile RamsoftAsyncHttpAppender runningInstance;
+    /** Instances standing in for this one, newest last; the newest live one takes over at stop(). Guarded by CLAIM_LOCK. */
+    private final List<RamsoftAsyncHttpAppender> standIns = new ArrayList<>();
+    /** Set by stop() once this instance's backlog has been handed over; anything arriving later goes to {@link #successor}. */
+    private volatile boolean retired;
+    /** The instance that took over at stop(), or null when none was standing in. Written before {@link #retired}. */
+    private volatile RamsoftAsyncHttpAppender successor;
+    /** The request a flush is waiting on, so stop() can cancel it rather than hand over while it is still open. */
+    private volatile Call inFlight;
+    private volatile boolean cancelSends;
 
     // Guards carryOver and serialises flushes (flusher thread, stop(), tests).
     private final ReentrantLock flushLock = new ReentrantLock();
@@ -186,6 +199,9 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
     public void start() {
         synchronized (CLAIM_LOCK) {
             stopRequested = false; // a start after a stop ships again
+            cancelSends = false;
+            successor = null;
+            retired = false;
             claimLocked();
         }
         super.start();
@@ -207,6 +223,8 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
             if (isShipping(current)) {
                 // A second registration (e.g. Global Scripts after "Redeploy All"): stand in for the running one.
                 runningInstance = current;
+                current.standIns.removeIf(s -> s == this || s.stopRequested || s.runningInstance != current);
+                current.standIns.add(this);
                 return;
             }
             RUNNING.remove(name, current); // left behind by an instance that has stopped
@@ -239,6 +257,9 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
      * ships), so updates and events are never handed to a stopped appender.
      */
     private RamsoftAsyncHttpAppender liveRunningInstance() {
+        if (retired) {
+            return successor; // stopped and handed over (null: nobody took over)
+        }
         RamsoftAsyncHttpAppender running = runningInstance;
         if (running == null || isShipping(running)) {
             return running;
@@ -317,6 +338,9 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
             running.append(event);
             return;
         }
+        if (retired) {
+            return; // stopped with no instance to take over: nothing would ever send it
+        }
         try {
             if (!endpoint.isSet()) {
                 // Before "Check Mirth Health" sets the endpoint (Mirth startup). Reported once it is set.
@@ -334,24 +358,7 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
             if (shipped != rendered) {
                 eventsRedacted.incrementAndGet();
             }
-            Entry entry = new Entry(shipped);
-            int chars = entry.json.length();
-            // Reserve the characters first so concurrent channel threads cannot overshoot the cap together.
-            if (queuedChars.addAndGet(chars) > maxQueueChars) {
-                queuedChars.addAndGet(-chars);
-                dropQueueFull();
-                return;
-            }
-            queuedBytes.addAndGet(entry.bytes);
-            if (!queue.offer(entry)) {
-                queuedChars.addAndGet(-chars);
-                queuedBytes.addAndGet(-entry.bytes);
-                dropQueueFull();
-                return;
-            }
-            if (fullBatchWaiting()) {
-                requestFlush();
-            }
+            admit(new Entry(shipped));
         } catch (Exception e) {
             // Counted like every other drop, so it shows up in the receiver, not only in the status log.
             droppedRenderFailed.incrementAndGet();
@@ -359,6 +366,41 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
                 StatusLogger.getLogger().error("RamsoftAppender exception", e);
             }
         }
+    }
+
+    /** Queues a rendered entry, or drops and counts it when the queue is full. */
+    private void admit(Entry entry) {
+        int chars = entry.json.length();
+        // Reserve the characters first so concurrent channel threads cannot overshoot the cap together.
+        if (queuedChars.addAndGet(chars) > maxQueueChars) {
+            queuedChars.addAndGet(-chars);
+            dropQueueFull();
+            return;
+        }
+        queuedBytes.addAndGet(entry.bytes);
+        if (!queue.offer(entry)) {
+            release(entry);
+            dropQueueFull();
+            return;
+        }
+        // stop() sets retired before it empties the queue, so an entry offered too late for that is
+        // still seen here. Whichever side removes it owns it: it is sent once, never stranded.
+        if (retired && queue.remove(entry)) {
+            release(entry);
+            RamsoftAsyncHttpAppender next = successor;
+            if (next != null) {
+                next.admit(entry);
+            }
+            return;
+        }
+        if (fullBatchWaiting()) {
+            requestFlush();
+        }
+    }
+
+    private void release(Entry entry) {
+        queuedChars.addAndGet(-entry.json.length());
+        queuedBytes.addAndGet(-entry.bytes);
     }
 
     private void dropQueueFull() {
@@ -626,8 +668,7 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
             if (next == null) {
                 break;
             }
-            queuedChars.addAndGet(-next.json.length());
-            queuedBytes.addAndGet(-next.bytes);
+            release(next);
             if (!batch.isEmpty() && bytes + 1 + next.bytes > maxBytes) {
                 // Does not fit; it leads the next batch (a single event is always sent on its own).
                 carryOver = next;
@@ -695,10 +736,23 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
                     .url(httpUrlBuilder.build())
                     .post(RequestBody.create(JSON, body.toString()))
                     .build();
-            try (Response response = client.newCall(request).execute()) {
-                return response.isSuccessful() ? null : "HTTP " + response.code();
+            Call call = client.newCall(request);
+            inFlight = call;
+            try {
+                // Paired with stop(): it sets cancelSends, then cancels inFlight. One of the two sees the other.
+                if (cancelSends) {
+                    call.cancel();
+                }
+                try (Response response = call.execute()) {
+                    return response.isSuccessful() ? null : "HTTP " + response.code();
+                }
+            } finally {
+                inFlight = null;
             }
         } catch (Exception e) {
+            if (cancelSends) {
+                return "cancelled by stop()";
+            }
             // The class name only: a message can carry the URL, and the URL carries the subscription key.
             return e.getClass().getSimpleName();
         }
@@ -707,8 +761,14 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
     /**
      * Stops the flusher and sends what is still queued within the final-flush budget, or within the
      * caller's timeout when that is shorter (log4j passes 0 for "no limit"). A regular flush in
-     * progress finishes its current request and yields; the final flush checks the budget before
-     * every request, so a stop takes at most the budget plus one request's timeouts.
+     * progress finishes its current request and yields; one still waiting on a response when the
+     * budget runs out is cancelled. The final flush checks the budget before every request, so a stop
+     * takes at most the budget plus one request's timeouts.
+     *
+     * <p>Then the newest instance standing in for this one takes over at once, with whatever was not
+     * sent in time and the drop counts not reported yet; events that reach this instance afterwards go
+     * to it too. Only after this instance's last request has ended, so the two never send at the same
+     * time. With no stand-in, what is left is written to the status logger as undelivered.
      */
     @Override
     public boolean stop(long timeout, TimeUnit timeUnit) {
@@ -730,7 +790,8 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
             } finally {
                 synchronized (CLAIM_LOCK) {
                     RUNNING.remove(getName(), this);
-                    draining = false; // a stand-in takes over on its next append or endpoint update
+                    draining = false;
+                    handOverLocked();
                 }
             }
         }
@@ -746,7 +807,18 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
             executor.shutdown();
         }
         try {
-            if (flushLock.tryLock(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS)) {
+            boolean locked = flushLock.tryLock(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+            if (!locked) {
+                // A regular flush is still waiting on a response. Cancel it, so no request of this
+                // instance is open when the one taking over starts sending.
+                cancelSends = true;
+                Call call = inFlight;
+                if (call != null) {
+                    call.cancel();
+                }
+                locked = flushLock.tryLock(CANCEL_GRACE_MS, TimeUnit.MILLISECONDS);
+            }
+            if (locked) {
                 try {
                     flushLocked(true, deadline);
                 } finally {
@@ -760,6 +832,60 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
         }
         if (executor != null) {
             executor.shutdownNow();
+        }
+    }
+
+    /**
+     * Under CLAIM_LOCK, after the final flush: the newest live stand-in becomes the shipping instance
+     * and receives the unsent entries and unreported drop counts. Without one, they are written to the
+     * status logger, the only place left to report them.
+     */
+    private void handOverLocked() {
+        RamsoftAsyncHttpAppender next = null;
+        for (int i = standIns.size() - 1; i >= 0 && next == null; i--) {
+            RamsoftAsyncHttpAppender s = standIns.get(i);
+            if (s.runningInstance == this && !s.stopRequested && !s.isStopping() && !s.isStopped()) {
+                next = s;
+            }
+        }
+        standIns.clear();
+        if (next != null) {
+            next.claimLocked(); // this instance has left RUNNING, so it ships from now on
+            if (!next.endpoint.isSet()) {
+                next.endpoint = endpoint; // "Check Mirth Health" has not reached it yet
+            }
+        }
+        successor = next;
+        retired = true;
+
+        List<Entry> left = new ArrayList<>();
+        if (flushLock.tryLock()) { // not held unless a cancelled request outlived the grace period
+            try {
+                if (carryOver != null) {
+                    left.add(carryOver);
+                    carryOver = null;
+                }
+            } finally {
+                flushLock.unlock();
+            }
+        }
+        Entry e;
+        while ((e = queue.poll()) != null) {
+            release(e);
+            left.add(e);
+        }
+        long full = droppedQueueFull.getAndSet(0);
+        long failed = droppedSendFailed.getAndSet(0);
+        long noEndpoint = droppedNoEndpoint.getAndSet(0);
+        long renderFailed = droppedRenderFailed.getAndSet(0);
+        if (next != null) {
+            next.restoreDropCounts(full, failed, noEndpoint, renderFailed);
+            for (Entry entry : left) {
+                next.admit(entry);
+            }
+        } else if (!left.isEmpty() || full + failed + noEndpoint + renderFailed > 0) {
+            StatusLogger.getLogger().warn("RamsoftHttpAppender stopped with {} log events unsent and {} drops unreported;"
+                    + " no instance took over", left.size(), full + failed + noEndpoint + renderFailed);
         }
     }
 

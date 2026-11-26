@@ -28,25 +28,34 @@ final class LogRedactor {
      * Name endings that mark a credential: {@code ClientSecret}, {@code aesKey}, {@code access_token},
      * {@code Ocp-Apim-Subscription-Key}, {@code password}... A name must END with one, so
      * {@code Clientsecretkeyid} (an id) and {@code Clientsecretendtime} (a date) are kept.
+     * {@code Authorization} must be the whole name (or {@code Proxy-Authorization}): as an ending it
+     * would also take {@code priorAuthorization}, an insurance field rather than a credential.
      */
-    private static final String SECRET_NAME = "[A-Za-z0-9_-]*?(?:secret|password|passwd|pwd|token|aes_?key|api_?key"
-            + "|access_?key|private_?key|shared_?key|signing_?key|subscription[-_]?key|connection_?string|authorization)";
+    private static final String SECRET_NAME = "(?:[A-Za-z0-9_-]*?(?:secret|password|passwd|pwd|token|aes_?key|api_?key"
+            + "|access_?key|private_?key|shared_?key|signing_?key|subscription[-_]?key|connection_?string)"
+            + "|(?:proxy-)?authorization)";
+
+    /** A flag rather than a credential, so {@code "ResetPassword":"true"} stays readable. */
+    private static final String FLAG = "(?:true|false|null)";
 
     /**
      * JSON members with a credential name, plain or escaped inside a message: {@code "ClientSecret":"…"}.
-     * Values shorter than 4 characters are kept: they are settings such as {@code "…AssocToken": "1"}.
+     * Values shorter than 4 characters are kept: they are settings such as {@code "…AssocToken": "1"};
+     * so are {@code true}, {@code false} and {@code null}.
      * The value repetition is possessive: a greedy repeated group recurses once per character and threw
      * StackOverflowError on a ~1,700-character token (a normal B2C access token) on the channel thread.
      */
     private static final Pattern MEMBER = Pattern.compile(
-            "(?i)(\\\\?\"" + SECRET_NAME + "\\\\?\"\\s*:\\s*\\\\?\")(?:[^\"\\\\]|\\\\(?!\")){4,}+");
+            "(?i)(\\\\?\"" + SECRET_NAME + "\\\\?\"\\s*:\\s*\\\\?\")(?!" + FLAG + "\\\\?\")"
+            + "(?:[^\"\\\\]|\\\\(?!\")){4,}+");
 
     /**
      * Parameters with a credential name in a URL, form body or connection string. {@code code} only after
      * {@code ?} or {@code &} (Azure Function keys), so text like {@code statusCode=200} is kept.
      */
     private static final Pattern PARAM = Pattern.compile(
-            "(?i)((?:(?<![A-Za-z0-9_-])(?:" + SECRET_NAME + "|sig)|[?&]code)=)[^&;\\s\"'\\\\<>]+");
+            "(?i)((?:(?<![A-Za-z0-9_-])(?:" + SECRET_NAME + "|sig)|[?&]code)=)(?!" + FLAG + "(?:[&;\\s\"'\\\\<>]|$))"
+            + "[^&;\\s\"'\\\\<>]+");
 
     /** {@code Authorization: Basic …} / {@code Bearer …} written as text rather than as a JSON member. */
     private static final Pattern AUTH_HEADER = Pattern.compile(
