@@ -849,6 +849,65 @@ public class RamsoftAsyncHttpAppenderTest {
         assertTrue(appender.getStats(), appender.getStats().contains("queued=50"));
     }
 
+    @Test(timeout = 20000)
+    public void anEventThatFailsToRenderIsCountedInTheDropReport() throws Exception {
+        RamsoftAsyncHttpAppender appender = newAppender(url, NEVER, 500, 1_000_000, 10_000);
+        appender.updateEndpointAndPattern(url, "test-key", new AbstractStringLayout(StandardCharsets.UTF_8) {
+            @Override
+            public String toSerializable(LogEvent event) {
+                throw new IllegalStateException("layout bug");
+            }
+        });
+        appender.append(event("cannot be rendered", "main"));
+        appender.updateEndpointAndPattern(url, "test-key", layout());
+        appender.append(event("fine", "main"));
+        appender.flush();
+
+        List<JsonObject> reports = entriesFromLogger(RamsoftAsyncHttpAppender.DROP_REPORT_LOGGER);
+        assertEquals(1, reports.size());
+        String report = reports.get(0).get("message").getAsString();
+        assertTrue(report, report.contains("dropped 1 "));
+        assertTrue(report, report.contains("render failed: 1"));
+    }
+
+    @Test(timeout = 20000)
+    public void aPatternThatStaysBrokenIsReportedOnceEvenWhenItsLayoutIsRebuilt() throws Exception {
+        StatusCapture capture = new StatusCapture();
+        StatusLogger.getLogger().registerListener(capture);
+        try {
+            RamsoftAsyncHttpAppender appender = newAppender(url, NEVER, 500, 1_000_000, 10_000);
+            String broken = PATTERN.replace("unit-test", "device\"7");
+            for (int run = 0; run < 3; run++) {
+                // What "Check Mirth Health" does on every run: a new PatternLayout with the same pattern.
+                appender.updateEndpointAndPattern(url, "test-key", PatternLayout.newBuilder().withPattern(broken).build());
+                appender.append(event("run " + run, "main"));
+            }
+            int malformed = 0;
+            for (String m : capture.messages(Level.ERROR)) {
+                if (m.contains("not a valid JSON")) {
+                    malformed++;
+                }
+            }
+            assertEquals(1, malformed);
+        } finally {
+            StatusLogger.getLogger().removeListener(capture);
+        }
+    }
+
+    @Test(timeout = 20000)
+    public void statsComeFromTheLiveInstanceNotFromOneThatHasStopped() throws Exception {
+        RamsoftAsyncHttpAppender first = newAppender(url, NEVER, 500, 1_000_000, 10_000);
+        first.append(event("shipped by the first", "main"));
+        first.flush();
+        RamsoftAsyncHttpAppender second = newAppender("", "", NEVER, 500, 1_000_000, 10_000, 16_000_000);
+        assertTrue(second.getStats(), second.getStats().startsWith("batches=1,"));
+
+        first.stop(5, TimeUnit.SECONDS);
+        assertTrue("the stopped instance's numbers must not be reported: " + second.getStats(),
+                second.getStats().startsWith("batches=0,"));
+        assertFalse(second.isStandIn());
+    }
+
     /** Counts renders; a minimal valid JSON layout. */
     private static final class CountingLayout extends AbstractStringLayout {
         final AtomicInteger renders = new AtomicInteger();

@@ -8,6 +8,7 @@ import org.apache.logging.log4j.core.StringLayout;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.Property;
 import org.apache.logging.log4j.core.impl.Log4jLogEvent;
+import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.apache.logging.log4j.message.Message;
 import org.apache.logging.log4j.message.SimpleMessage;
 import org.apache.logging.log4j.status.StatusLogger;
@@ -109,7 +110,8 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
     private volatile Layout<? extends Serializable> dynamicLayout;
     /** service/key from the last event the layout rendered as valid JSON; put on events the appender rebuilds. */
     private volatile Identity identity;
-    private volatile Layout<? extends Serializable> malformedReportedFor;
+    /** Pattern text the malformed-render status line was last written for. */
+    private volatile String malformedReportedFor;
 
     private final int flushIntervalMs;
     private final int maxBatchEvents;
@@ -124,6 +126,7 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
     private final AtomicLong droppedQueueFull = new AtomicLong();
     private final AtomicLong droppedSendFailed = new AtomicLong();
     private final AtomicLong droppedNoEndpoint = new AtomicLong();
+    private final AtomicLong droppedRenderFailed = new AtomicLong();
     private final AtomicLong batchesSent = new AtomicLong();
     private final AtomicLong eventsSent = new AtomicLong();
     private final AtomicLong eventsRebuilt = new AtomicLong();
@@ -350,6 +353,8 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
                 requestFlush();
             }
         } catch (Exception e) {
+            // Counted like every other drop, so it shows up in the receiver, not only in the status log.
+            droppedRenderFailed.incrementAndGet();
             if (!ignoreExceptions()) {
                 StatusLogger.getLogger().error("RamsoftAppender exception", e);
             }
@@ -406,9 +411,16 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
         }
     }
 
+    /**
+     * Once per pattern, not per Layout instance: "Check Mirth Health" builds a new PatternLayout each time
+     * it runs, so a pattern that stays broken would otherwise log on every run.
+     */
     private void reportMalformed(Layout<? extends Serializable> layout) {
-        if (malformedReportedFor != layout) {
-            malformedReportedFor = layout;
+        String key = layout instanceof PatternLayout
+                ? ((PatternLayout) layout).getConversionPattern()
+                : layout.getClass().getName() + "@" + System.identityHashCode(layout);
+        if (!key.equals(malformedReportedFor)) {
+            malformedReportedFor = key;
             StatusLogger.getLogger().error("RamsoftHttpAppender: the layout rendered an event that is not a valid JSON"
                     + " object; such events are rebuilt by the appender and marked Properties." + REBUILT_PROPERTY);
         }
@@ -547,16 +559,17 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
             long full = droppedQueueFull.getAndSet(0);
             long failed = droppedSendFailed.getAndSet(0);
             long noEndpoint = droppedNoEndpoint.getAndSet(0);
-            boolean reporting = full > 0 || failed > 0 || noEndpoint > 0;
+            long renderFailed = droppedRenderFailed.getAndSet(0);
+            boolean reporting = full > 0 || failed > 0 || noEndpoint > 0 || renderFailed > 0;
             List<Entry> batch = takeBatch(reporting);
             int events = batch.size();
             if (reporting && events > 0 && bodyBytes(batch) + REPORT_RESERVE_BYTES > maxBatchBytes) {
                 // A single event over the size cap goes on its own; the report waits for the next batch.
-                restoreDropCounts(full, failed, noEndpoint);
+                restoreDropCounts(full, failed, noEndpoint, renderFailed);
                 reporting = false;
             }
             if (reporting) {
-                batch.add(dropReport(full, failed, noEndpoint));
+                batch.add(dropReport(full, failed, noEndpoint, renderFailed));
             }
             if (batch.isEmpty()) {
                 return;
@@ -578,7 +591,7 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
                 lastSendFailed = true;
                 // The report went down with the batch: put its counts back so the next one is complete.
                 if (reporting) {
-                    restoreDropCounts(full, failed, noEndpoint);
+                    restoreDropCounts(full, failed, noEndpoint, renderFailed);
                 }
                 droppedSendFailed.addAndGet(events);
                 return;
@@ -591,10 +604,11 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
         }
     }
 
-    private void restoreDropCounts(long full, long failed, long noEndpoint) {
+    private void restoreDropCounts(long full, long failed, long noEndpoint, long renderFailed) {
         droppedQueueFull.addAndGet(full);
         droppedSendFailed.addAndGet(failed);
         droppedNoEndpoint.addAndGet(noEndpoint);
+        droppedRenderFailed.addAndGet(renderFailed);
     }
 
     private List<Entry> takeBatch(boolean reserveForReport) {
@@ -633,16 +647,17 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
         return bytes;
     }
 
-    private Entry dropReport(long full, long failed, long noEndpoint) {
+    private Entry dropReport(long full, long failed, long noEndpoint, long renderFailed) {
         String threadName = Thread.currentThread().getName();
         LogEvent report = Log4jLogEvent.newBuilder()
                 .setLoggerName(DROP_REPORT_LOGGER)
                 .setLevel(Level.WARN)
                 .setThreadName(threadName)
                 .setTimeMillis(System.currentTimeMillis())
-                .setMessage(new SimpleMessage("RamsoftHttpAppender dropped " + (full + failed + noEndpoint)
+                .setMessage(new SimpleMessage("RamsoftHttpAppender dropped " + (full + failed + noEndpoint + renderFailed)
                         + " log events since the last delivered batch (queue full: " + full
-                        + ", send failed: " + failed + ", no endpoint yet: " + noEndpoint + ")"))
+                        + ", send failed: " + failed + ", no endpoint yet: " + noEndpoint
+                        + ", render failed: " + renderFailed + ")"))
                 .build();
         // Built by the appender, not the layout, so a report can always be sent.
         return new Entry(rebuild(report, threadName, false));
@@ -750,14 +765,16 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
 
     /** Diagnostics for Global Scripts / tests: "batches=..,events=..,queued=..,droppedPending=..,rebuilt=..,redacted=..". */
     public String getStats() {
-        RamsoftAsyncHttpAppender running = runningInstance;
+        // Same routing as append(): never report a stopped instance's numbers after a takeover is due.
+        RamsoftAsyncHttpAppender running = liveRunningInstance();
         if (running != null) {
             return running.getStats();
         }
         return "batches=" + batchesSent.get()
                 + ",events=" + eventsSent.get()
                 + ",queued=" + queue.size()
-                + ",droppedPending=" + (droppedQueueFull.get() + droppedSendFailed.get() + droppedNoEndpoint.get())
+                + ",droppedPending=" + (droppedQueueFull.get() + droppedSendFailed.get() + droppedNoEndpoint.get()
+                        + droppedRenderFailed.get())
                 + ",rebuilt=" + eventsRebuilt.get()
                 + ",redacted=" + eventsRedacted.get();
     }
