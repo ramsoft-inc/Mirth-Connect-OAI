@@ -137,20 +137,30 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
 
     @Override
     public void start() {
+        claimShippingOrStandIn();
+        super.start();
+    }
+
+    private static boolean isShipping(RamsoftAsyncHttpAppender a) {
+        return a.isStarted() && !a.stopRequested;
+    }
+
+    /** Becomes the shipping instance for this name, or a stand-in for the one that already is. */
+    private synchronized void claimShippingOrStandIn() {
         String name = getName();
         while (true) {
             RamsoftAsyncHttpAppender current = RUNNING.putIfAbsent(name, this);
             if (current == null || current == this) {
                 break;
             }
-            if (current.isStarted() && !current.stopRequested) {
+            if (isShipping(current)) {
                 // A second registration (e.g. Global Scripts after "Redeploy All"): stand in for the running one.
                 runningInstance = current;
-                super.start();
                 return;
             }
             RUNNING.remove(name, current); // left behind by an instance that has stopped
         }
+        runningInstance = null;
         httpClient = new OkHttpClient.Builder()
                 .connectTimeout(2, TimeUnit.SECONDS)
                 .writeTimeout(5, TimeUnit.SECONDS)
@@ -165,7 +175,24 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
         });
         executor.scheduleWithFixedDelay(this::flushSafely, flushIntervalMs, flushIntervalMs, TimeUnit.MILLISECONDS);
         flusher = executor;
-        super.start();
+    }
+
+    /**
+     * The instance this stand-in forwards to, or null when this instance ships itself. If the one it
+     * stood in for has stopped, this instance takes over (or stands in for whichever instance now
+     * ships), so updates and events are never handed to a stopped appender.
+     */
+    private RamsoftAsyncHttpAppender liveRunningInstance() {
+        RamsoftAsyncHttpAppender running = runningInstance;
+        if (running == null || isShipping(running)) {
+            return running;
+        }
+        synchronized (this) {
+            if (runningInstance == running && isStarted()) {
+                claimShippingOrStandIn();
+            }
+            return runningInstance;
+        }
     }
 
     // ✅ Allow layout + endpoint update after deploy
@@ -173,7 +200,7 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
         this.url = url;
         this.subscriptionKey = subscriptionKey;
         this.dynamicLayout = layout;
-        RamsoftAsyncHttpAppender running = runningInstance;
+        RamsoftAsyncHttpAppender running = liveRunningInstance();
         if (running != null) {
             running.updateEndpointAndPattern(url, subscriptionKey, layout);
         }
@@ -210,7 +237,7 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
 
     @Override
     public void append(LogEvent event) {
-        RamsoftAsyncHttpAppender running = runningInstance;
+        RamsoftAsyncHttpAppender running = liveRunningInstance();
         if (running != null) {
             running.append(event);
             return;
@@ -224,13 +251,14 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
                 return;
             }
             int chars = logMsg.length();
-            if (queuedChars.get() + chars > maxQueueChars || !queue.offer(logMsg)) {
+            // Reserve the characters first so concurrent channel threads cannot overshoot the cap together.
+            if (queuedChars.addAndGet(chars) > maxQueueChars || !queue.offer(logMsg)) {
+                queuedChars.addAndGet(-chars);
                 // Never block a channel thread on log shipping, and never let a backlog grow the heap unbounded.
                 droppedQueueFull.incrementAndGet();
                 requestFlush();
                 return;
             }
-            queuedChars.addAndGet(chars);
             if (fullBatchWaiting()) {
                 requestFlush();
             }

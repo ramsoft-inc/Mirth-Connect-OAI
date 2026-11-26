@@ -573,6 +573,26 @@ public class RamsoftAsyncHttpAppenderTest {
     }
 
     @Test(timeout = 20000)
+    public void aStandInTakesOverWhenTheAppenderItStoodInForHasStopped() throws Exception {
+        int threadsBefore = flusherThreads();
+        RamsoftAsyncHttpAppender first = newAppender(url, NEVER, 500, 1_000_000, 10_000);
+        RamsoftAsyncHttpAppender second = newAppender("", "", NEVER, 500, 1_000_000, 10_000, 16_000_000);
+        assertTrue(second.isStandIn());
+
+        first.stop(5, TimeUnit.SECONDS);
+        second.updateEndpointAndPattern(url, "after-takeover", layout()); // must not go to the stopped one
+
+        assertFalse("with nothing left to stand in for, it ships itself", second.isStandIn());
+        assertEquals(threadsBefore + 1, flusherThreads());
+        second.append(event("shipped by the former stand-in", "main"));
+        second.flush();
+
+        assertEquals(1, bodies.size());
+        assertEquals("subscription-key=after-takeover", queries.get(0));
+        assertEquals("shipped by the former stand-in", allEntries().get(0).get("message").getAsString());
+    }
+
+    @Test(timeout = 20000)
     public void stopFlushesWhatIsStillQueued() throws Exception {
         RamsoftAsyncHttpAppender appender = newAppender(url, NEVER, 500, 1_000_000, 10_000);
         for (int i = 0; i < 3; i++) {
