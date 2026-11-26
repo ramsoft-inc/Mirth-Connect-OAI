@@ -55,6 +55,8 @@ import java.util.regex.Pattern;
  * <p>Every entry in a batch is a well-formed JSON object: the layout output is checked, and an event
  * the layout did not render as valid JSON is rebuilt by the appender (marked with
  * {@code Properties.RamsoftAppender}) instead of making the receiver reject the whole batch.
+ * Credentials (JWTs, subscription keys and similar) are masked in the shipped copy by
+ * {@link LogRedactor}; the local {@code mirth.log} keeps the original line.
  *
  * <p>Failure behaviour is deliberately lossy: the appender never blocks a channel thread, keeps at
  * most one request in flight, and drops a batch it could not deliver rather than retrying it. After
@@ -125,6 +127,7 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
     private final AtomicLong batchesSent = new AtomicLong();
     private final AtomicLong eventsSent = new AtomicLong();
     private final AtomicLong eventsRebuilt = new AtomicLong();
+    private final AtomicLong eventsRedacted = new AtomicLong();
     private volatile boolean lastSendFailed;
     private volatile boolean stopRequested;
     volatile long finalFlushBudgetMs = DEFAULT_FINAL_FLUSH_BUDGET_MS;
@@ -314,7 +317,13 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
                 droppedNoEndpoint.incrementAndGet();
                 return;
             }
-            Entry entry = new Entry(toJson(event));
+            String rendered = toJson(event);
+            // Credentials are masked in the shipped copy only; mirth.log keeps the original line.
+            String shipped = LogRedactor.redact(rendered);
+            if (shipped != rendered) {
+                eventsRedacted.incrementAndGet();
+            }
+            Entry entry = new Entry(shipped);
             int chars = entry.json.length();
             // Reserve the characters first so concurrent channel threads cannot overshoot the cap together.
             if (queuedChars.addAndGet(chars) > maxQueueChars) {
@@ -722,7 +731,7 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
         }
     }
 
-    /** Diagnostics for Global Scripts / tests: "batches=..,events=..,queued=..,droppedPending=..,rebuilt=..". */
+    /** Diagnostics for Global Scripts / tests: "batches=..,events=..,queued=..,droppedPending=..,rebuilt=..,redacted=..". */
     public String getStats() {
         RamsoftAsyncHttpAppender running = runningInstance;
         if (running != null) {
@@ -732,7 +741,8 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
                 + ",events=" + eventsSent.get()
                 + ",queued=" + queue.size()
                 + ",droppedPending=" + (droppedQueueFull.get() + droppedSendFailed.get() + droppedNoEndpoint.get())
-                + ",rebuilt=" + eventsRebuilt.get();
+                + ",rebuilt=" + eventsRebuilt.get()
+                + ",redacted=" + eventsRedacted.get();
     }
 
     boolean isStandIn() {

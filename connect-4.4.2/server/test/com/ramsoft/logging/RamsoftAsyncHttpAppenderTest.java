@@ -772,6 +772,47 @@ public class RamsoftAsyncHttpAppenderTest {
         assertFalse(entry.has("Properties"));
     }
 
+    // --- Credentials never leave the box ------------------------------------------------------------
+
+    @Test(timeout = 20000)
+    public void credentialsAreMaskedInTheShippedCopyOfEveryField() throws Exception {
+        String jwt = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9" + "." + "eyJzdWIiOiIxMjM0NSJ9" + "." + "c2lnbmF0dXJlLXZhbHVl";
+        String key = "306e0123456789abcdef0123456789ab";
+        RamsoftAsyncHttpAppender appender = newAppender(url, NEVER, 500, 1_000_000, 10_000);
+        appender.append(event("Bearer " + jwt, CHANNEL_THREAD));
+        appender.append(event("Response = {\"logEndpoint\":\"https://h/LogReceiver?subscription-key=" + key + "\"}", "main"));
+        appender.append(eventWithError("call failed", "main", new IllegalStateException("401 for token " + jwt)));
+        appender.append(event("nothing secret here", "main"));
+        appender.flush();
+
+        String body = bodies.get(0);
+        assertFalse("no token may reach the receiver", body.contains("eyJ"));
+        assertFalse("no key may reach the receiver", body.contains(key));
+        JsonArray batch = array(body);
+        assertEquals(4, batch.size());
+        assertEquals("Bearer " + LogRedactor.JWT_MASK, batch.get(0).getAsJsonObject().get("message").getAsString());
+        assertEquals("Outbound OAI Polling", batch.get(0).getAsJsonObject().get("channelName").getAsString());
+        assertEquals("Response = {\"logEndpoint\":\"https://h/LogReceiver?subscription-key=<redacted>\"}",
+                batch.get(1).getAsJsonObject().get("message").getAsString());
+        assertTrue(batch.get(2).getAsJsonObject().get("exception").getAsString().contains("401 for token " + LogRedactor.JWT_MASK));
+        assertEquals("nothing secret here", batch.get(3).getAsJsonObject().get("message").getAsString());
+        assertTrue(appender.getStats(), appender.getStats().contains("redacted=3"));
+    }
+
+    @Test(timeout = 20000)
+    public void credentialsAreMaskedInARebuiltEventToo() throws Exception {
+        String jwt = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9" + "." + "eyJzdWIiOiIxMjM0NSJ9" + "." + "c2lnbmF0dXJlLXZhbHVl";
+        RamsoftAsyncHttpAppender appender = newAppender(url, NEVER, 500, 1_000_000, 10_000);
+        appender.updateEndpointAndPattern(url, "test-key", PatternLayout.newBuilder()
+                .withPattern(PATTERN.replace("unit-test", "device\"7")).build());
+        appender.append(event("Bearer " + jwt, "main"));
+        appender.flush();
+
+        JsonObject entry = array(bodies.get(0)).get(0).getAsJsonObject();
+        assertTrue(entry.has("Properties"));
+        assertEquals("Bearer " + LogRedactor.JWT_MASK, entry.get("message").getAsString());
+    }
+
     // --- Size is measured as sent: UTF-8 bytes -------------------------------------------------------
 
     @Test(timeout = 20000)
