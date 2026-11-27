@@ -673,6 +673,12 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
         droppedSendFailed.addAndGet(failed);
         droppedNoEndpoint.addAndGet(noEndpoint);
         droppedRenderFailed.addAndGet(renderFailed);
+        if (retired) {
+            // Counts moved here after this instance handed over too (a late drop on the instance it took
+            // over from) would never be reported: pass them on, as append() does with its own. retired is
+            // set before the hand-over moves the counts, so either that move or this one takes them.
+            moveDropCountsTo(successor);
+        }
     }
 
     private List<Entry> takeBatch(boolean reserveForReport) {

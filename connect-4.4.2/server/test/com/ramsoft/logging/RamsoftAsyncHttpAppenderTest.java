@@ -1048,6 +1048,45 @@ public class RamsoftAsyncHttpAppenderTest {
     }
 
     @Test(timeout = 20000)
+    public void aLateDropReachesTheLastInstanceAfterTwoHandOvers() throws Exception {
+        final CountDownLatch rendering = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+        Layout<? extends Serializable> failing = new AbstractStringLayout(StandardCharsets.UTF_8) {
+            @Override
+            public String toSerializable(LogEvent event) {
+                rendering.countDown();
+                try {
+                    release.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                throw new IllegalStateException("layout bug");
+            }
+        };
+        RamsoftAsyncHttpAppender first = new RamsoftAsyncHttpAppender("RamsoftHttp", null, failing, true, url, "k",
+                (int) NEVER, 500, 1_000_000, 10_000, 16_000_000);
+        appenders.add(first);
+        first.start();
+        final RamsoftAsyncHttpAppender second = newAppender("", "", NEVER, 500, 1_000_000, 10_000, 16_000_000);
+        Thread channel = new Thread(() -> second.append(event("cannot be rendered", "main"))); // forwarded to first
+        channel.start();
+        assertTrue(rendering.await(5, TimeUnit.SECONDS));
+
+        first.stop(5, TimeUnit.SECONDS); // second takes over
+        RamsoftAsyncHttpAppender third = newAppender("", "", NEVER, 500, 1_000_000, 10_000, 16_000_000);
+        assertTrue(third.isStandIn());
+        second.stop(5, TimeUnit.SECONDS); // third takes over from second
+        release.countDown(); // first counts the failure and moves it to second, which has handed over too
+        channel.join(5_000);
+        third.flush();
+
+        List<JsonObject> reports = entriesFromLogger(RamsoftAsyncHttpAppender.DROP_REPORT_LOGGER);
+        assertEquals(1, reports.size());
+        String report = reports.get(0).get("message").getAsString();
+        assertTrue(report, report.contains("render failed: 1"));
+    }
+
+    @Test(timeout = 20000)
     public void afterTwoStopsTheLastStandInShipsWithoutWaitingForAnEvent() throws Exception {
         RamsoftAsyncHttpAppender first = newAppender(url, NEVER, 500, 1_000_000, 10_000);
         RamsoftAsyncHttpAppender older = newAppender("", "", NEVER, 500, 1_000_000, 10_000, 16_000_000);
