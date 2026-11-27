@@ -3,13 +3,22 @@
     Builds custom-lib/com.ramsoft.logging.jar (RamsoftAsyncHttpAppender) and runs its unit tests.
 
 .DESCRIPTION
-    The jar is deployed to Mirth's custom-lib folder by the OmegaAI-Mono Mirth update packages
-    (Mirth-HL7/UpdatePackage/files/<version>/custom-lib/com.ramsoft.logging.jar). It compiles
-    against the same log4j and OkHttp jars Mirth 4.4.2 ships in server-lib, targets Java 8 so it
-    loads on any JVM Mirth runs on, and contains only com/ramsoft/logging classes.
+    This script is the only build of the jar; there is no CI build. It compiles against the same
+    log4j and OkHttp jars Mirth 4.4.2 ships in server-lib, targets Java 8 so it loads on any JVM
+    Mirth runs on, and contains only com/ramsoft/logging classes. If a compile or test step fails,
+    no jar is written.
+
+    Release: build from the merge commit without -SkipTests, then commit the jar to
+      - ADO RapidResults/MirthOAI, branch main, /Win64/Mirth Connect/custom-lib/com.ramsoft.logging.jar
+        (packaged by the Build-Mirth-HL7 installer pipeline, for new installs), and
+      - an OmegaAI-Mono Mirth update package,
+        Mirth-HL7/UpdatePackage/files/<version>/custom-lib/com.ramsoft.logging.jar
+        (for existing instances; the package must restart the Mirth service for the jar to load).
+    Each of those PRs states the source commit and the jar's SHA-256.
 
 .PARAMETER SkipTests
-    Build the jar without compiling/running the unit tests.
+    Build the jar without compiling/running the unit tests. Local experiments only; never for a
+    jar that is released.
 
 .EXAMPLE
     pwsh ./build-ramsoft-logging.ps1
