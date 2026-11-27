@@ -38,24 +38,48 @@ final class LogRedactor {
     /** A flag rather than a credential, so {@code "ResetPassword":"true"} stays readable. */
     private static final String FLAG = "(?:true|false|null)";
 
+    /** One character of a JSON string value: anything but a quote or backslash, or one whole escape. */
+    private static final String PLAIN_CHAR = "(?:[^\"\\\\]|\\\\.)";
+
     /**
-     * JSON members with a credential name, plain or escaped inside a message: {@code "ClientSecret":"…"}.
+     * One character of a JSON string value that is itself escaped inside a message, where the value ends
+     * at {@code \"}: a plain character, an escape of the message ({@code \n}, {@code é}), or an
+     * escape of the inner value ({@code \\\"} for a quote, {@code \\\\} for a backslash). Never a bare
+     * quote, so a match cannot run past the end of the message it sits in.
+     */
+    private static final String EMBEDDED_CHAR = "(?:[^\"\\\\]|\\\\[^\"\\\\]|\\\\\\\\(?:\\\\.|[^\"\\\\]))";
+
+    /**
+     * JSON members with a credential name: {@code "ClientSecret":"…"}. The value is read escape by escape,
+     * so an escaped quote inside it does not end it early and a trailing escaped backslash is not split
+     * (which would leave the entry invalid JSON).
      * Values shorter than 4 characters are kept: they are settings such as {@code "…AssocToken": "1"};
      * so are {@code true}, {@code false} and {@code null}.
-     * The value repetition is possessive: a greedy repeated group recurses once per character and threw
+     * Value repetitions are possessive: a greedy repeated group recurses once per character and threw
      * StackOverflowError on a ~1,700-character token (a normal B2C access token) on the channel thread.
      */
     private static final Pattern MEMBER = Pattern.compile(
-            "(?i)(\\\\?\"" + SECRET_NAME + "\\\\?\"\\s*:\\s*\\\\?\")(?!" + FLAG + "\\\\?\")"
-            + "(?:[^\"\\\\]|\\\\(?!\")){4,}+");
+            "(?i)(\"" + SECRET_NAME + "\"\\s*:\\s*\")(?!" + FLAG + "\")" + PLAIN_CHAR + "{4,}+");
+
+    /** The same members escaped inside a message: {@code \"ClientSecret\":\"…\"}. */
+    private static final Pattern EMBEDDED_MEMBER = Pattern.compile(
+            "(?i)(\\\\\"" + SECRET_NAME + "\\\\\"\\s*:\\s*\\\\\")(?!" + FLAG + "\\\\\")" + EMBEDDED_CHAR + "{4,}+");
 
     /**
      * Parameters with a credential name in a URL, form body or connection string. {@code code} only after
      * {@code ?} or {@code &} (Azure Function keys), so text like {@code statusCode=200} is kept.
+     * A connection-string value may be quoted ({@code Password="…"}, escaped inside a message, or
+     * {@code Password='…'}) and is then masked with its quotes. An unquoted value that contains spaces is
+     * masked up to its {@code ;}; any other unquoted value ends at the first space or delimiter. An escaped
+     * backslash ({@code \\}) is part of an unquoted value.
      */
     private static final Pattern PARAM = Pattern.compile(
-            "(?i)((?:(?<![A-Za-z0-9_-])(?:" + SECRET_NAME + "|sig)|[?&]code)=)(?!" + FLAG + "(?:[&;\\s\"'\\\\<>]|$))"
-            + "[^&;\\s\"'\\\\<>]+");
+            "(?i)((?:(?<![A-Za-z0-9_-])(?:" + SECRET_NAME + "|sig)|[?&]code)=)(?:"
+            + "\\\\\"" + EMBEDDED_CHAR + "*+\\\\\""
+            + "|'(?:[^'\"\\\\]|\\\\.|'')*+'"
+            + "|(?!" + FLAG + "(?:[&;\\s\"'\\\\<>]|$))(?:"
+            + "(?:[^&;\"'\\\\<>\\r\\n]|\\\\\\\\)++(?=;)"
+            + "|(?:[^&;\\s\"'\\\\<>]|\\\\\\\\)++))");
 
     /** {@code Authorization: Basic …} / {@code Bearer …} written as text rather than as a JSON member. */
     private static final Pattern AUTH_HEADER = Pattern.compile(
@@ -71,6 +95,7 @@ final class LogRedactor {
         }
         String out = entry;
         out = replace(MEMBER, out, "$1" + VALUE_MASK);
+        out = replace(EMBEDDED_MEMBER, out, "$1" + VALUE_MASK);
         out = replace(PARAM, out, "$1" + VALUE_MASK);
         out = replace(AUTH_HEADER, out, "$1" + VALUE_MASK);
         out = replace(JWT, out, JWT_MASK);

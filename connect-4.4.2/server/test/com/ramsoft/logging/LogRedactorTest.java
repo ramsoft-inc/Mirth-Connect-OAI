@@ -60,6 +60,53 @@ public class LogRedactorTest {
     }
 
     @Test
+    public void aSecretValueIsMaskedWholeAcrossEscapedQuotesAndBackslashes() {
+        // Plain member: an escaped quote inside the value, then a value ending in an escaped backslash.
+        assertEquals("{\"password\":\"<redacted>\"}", LogRedactor.redact("{\"password\":\"ab\\\"cdef\"}"));
+        assertEquals("{\"password\":\"<redacted>\"}", LogRedactor.redact("{\"password\":\"abcd\\\\\"}"));
+        // The same values escaped inside a message: \\\" is the inner quote, \\\\ the inner backslash.
+        assertEquals("{\\\"password\\\":\\\"<redacted>\\\"}", LogRedactor.redact("{\\\"password\\\":\\\"ab\\\\\\\"cdef\\\"}"));
+        assertEquals("{\\\"password\\\":\\\"<redacted>\\\"}", LogRedactor.redact("{\\\"password\\\":\\\"abcd\\\\\\\\\\\"}"));
+
+        String entry = "{\"message\":\"Response = {\\\"client_secret\\\":\\\"s3\\\\\\\"cr3t-tail\\\\\\\\\\\"}\","
+                + "\"password\":\"pa55\\\"word-tail\\\\\",\"exception\":\"\"}";
+        assertTrue(entry, JsonObjectCheck.of(entry).valid);
+        String out = LogRedactor.redact(entry);
+        assertTrue(out, JsonObjectCheck.of(out).valid);
+        assertFalse(out, out.contains("tail"));
+
+        // A message cut off inside a secret value, right after an escaped backslash: the mask stops at
+        // the end of the message instead of running into the next field.
+        String cut = "{\"message\":\"Response = {\\\"client_secret\\\":\\\"s3cr3t\\\\\",\"exception\":\"\"}";
+        assertTrue(cut, JsonObjectCheck.of(cut).valid);
+        String cutOut = LogRedactor.redact(cut);
+        assertTrue(cutOut, JsonObjectCheck.of(cutOut).valid);
+        assertFalse(cutOut, cutOut.contains("s3cr3t"));
+    }
+
+    @Test
+    public void quotedSpacedAndBackslashedConnectionStringPasswordsAreMasked() {
+        assertEquals("Server=db;Password=<redacted>;Encrypt=true",
+                LogRedactor.redact("Server=db;Password='p@ss word;x';Encrypt=true"));
+        // A double-quoted value only occurs escaped inside a message.
+        assertEquals("Server=db;Password=<redacted>;Encrypt=true",
+                LogRedactor.redact("Server=db;Password=\\\"p@ss word;x\\\";Encrypt=true"));
+        assertEquals("Server=db;Password=<redacted>;Encrypt=true",
+                LogRedactor.redact("Server=db;Password=my secret pass;Encrypt=true"));
+        // dom\pa55 and "my dom\pass", escaped inside a message, with and without a following ';'.
+        assertEquals("Server=db;Password=<redacted>;Encrypt=true",
+                LogRedactor.redact("Server=db;Password=my dom\\\\pass;Encrypt=true"));
+        assertEquals("GET /x?password=<redacted>&a=1", LogRedactor.redact("GET /x?password=dom\\\\pa55&a=1"));
+
+        String entry = "{\"message\":\"conn Server=db;Password=\\\"a b;c-tail\\\";Pwd='x y-tail';User=u\",\"exception\":\"\"}";
+        assertTrue(entry, JsonObjectCheck.of(entry).valid);
+        String out = LogRedactor.redact(entry);
+        assertTrue(out, JsonObjectCheck.of(out).valid);
+        assertFalse(out, out.contains("tail"));
+        assertTrue(out, out.contains(";User=u"));
+    }
+
+    @Test
     public void theDeviceConfigResponseKeepsItsSettingsButLosesItsSecrets() {
         // The shape COMMON_UTIL_CallAPIGET_nonResource logs for /fhir/Device/Config, escaped inside a message.
         String message = "Response = {\\n  \\\"ClientID\\\": \\\"7e2e445a-28e0-4dc9-a48a-863d429a4ee0\\\",\\n"
