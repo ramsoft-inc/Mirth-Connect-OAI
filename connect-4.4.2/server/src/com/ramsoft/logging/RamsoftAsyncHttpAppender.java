@@ -811,7 +811,11 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
             stopRequested = true;
             wasShipping = shipping;
             shipping = false;
-            draining = wasShipping; // keeps the name until the backlog is sent
+            if (wasShipping) {
+                // Keeps the name until the backlog is sent. Only the call that stops shipping sets it: a
+                // concurrent second stop() must not clear it while the first is still sending.
+                draining = true;
+            }
         }
         if (wasShipping) {
             long budgetMs = finalFlushBudgetMs;

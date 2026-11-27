@@ -1007,6 +1007,23 @@ public class RamsoftAsyncHttpAppenderTest {
     }
 
     @Test(timeout = 30000)
+    public void aSecondStopWhileTheFirstIsDrainingKeepsTheNameUntilTheDrainEnds() throws Exception {
+        responseDelayMs = 2_000;
+        arrivedLatch = new CountDownLatch(1);
+        final RamsoftAsyncHttpAppender old = newAppender(url, NEVER, 500, 1_000_000, 10_000);
+        old.finalFlushBudgetMs = 10_000;
+        old.append(event("drained at stop", "main"));
+        Thread firstStop = new Thread(() -> old.stop(0, TimeUnit.MILLISECONDS));
+        firstStop.start();
+        assertTrue(arrivedLatch.await(5, TimeUnit.SECONDS)); // the drain request is open
+
+        old.stop(0, TimeUnit.MILLISECONDS); // a second, concurrent stop returns at once
+        RamsoftAsyncHttpAppender next = newAppender("", "", NEVER, 500, 1_000_000, 10_000, 16_000_000);
+        assertTrue("the draining instance still owns the name", next.isStandIn());
+        firstStop.join(10_000);
+    }
+
+    @Test(timeout = 30000)
     public void anInterruptedStopStillCancelsTheOpenRequestBeforeTheStandInTakesOver() throws Exception {
         responseDelayMs = 5_000;
         arrivedLatch = new CountDownLatch(1);
