@@ -246,6 +246,11 @@ public class RamsoftAsyncHttpAppender extends AbstractAppender {
             t.setDaemon(true);
             return t;
         });
+        // A new flusher starts clean. A request cancelled by stop() is no gateway failure, so it does not
+        // hold back early flushes after a restart. Nothing is queued on this executor yet, so a set
+        // flushRequested can only be left from an early flush the old one's shutdownNow() discarded.
+        flushRequested.set(false);
+        lastSendFailed = false;
         executor.scheduleWithFixedDelay(this::flushSafely, flushIntervalMs, flushIntervalMs, TimeUnit.MILLISECONDS);
         flusher = executor;
         shipping = true;

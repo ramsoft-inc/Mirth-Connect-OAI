@@ -981,6 +981,32 @@ public class RamsoftAsyncHttpAppenderTest {
     }
 
     @Test(timeout = 30000)
+    public void afterARestartAFullBatchIsSentWithoutWaitingForTheInterval() throws Exception {
+        responseDelayMs = 5_000;
+        arrivedLatch = new CountDownLatch(1);
+        RamsoftAsyncHttpAppender appender = newAppender(url, NEVER, 10, 1_000_000, 10_000);
+        appender.finalFlushBudgetMs = 300;
+        for (int i = 0; i < 9; i++) {
+            appender.append(event("in flight " + i, "main")); // a full batch: its early flush is now waiting
+        }
+        assertTrue(arrivedLatch.await(5, TimeUnit.SECONDS));
+        for (int i = 0; i < 9; i++) {
+            appender.append(event("queued behind " + i, "main")); // another full batch: an early flush is queued
+        }
+        // The open request is cancelled and the queued early flush is discarded with the flusher.
+        appender.stop(0, TimeUnit.MILLISECONDS);
+
+        responseDelayMs = 0;
+        arrivedLatch = new CountDownLatch(1);
+        appender.start();
+        for (int i = 0; i < 9; i++) {
+            appender.append(event("after restart " + i, "main"));
+        }
+        // The interval never fires (NEVER), so only an early flush can send this batch.
+        assertTrue("a full batch after a restart must be sent at once", arrivedLatch.await(5, TimeUnit.SECONDS));
+    }
+
+    @Test(timeout = 30000)
     public void anInterruptedStopStillCancelsTheOpenRequestBeforeTheStandInTakesOver() throws Exception {
         responseDelayMs = 5_000;
         arrivedLatch = new CountDownLatch(1);
